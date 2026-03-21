@@ -1,0 +1,27 @@
+{
+    "name": "FLOR MESSENGER",
+    "short_name": "FLOR",
+    "description": "Чаты, серверы, голос и личные сообщения",
+    "start_url": "/login.html",
+    "scope": "/",
+    "display": "standalone",
+    "orientation": "any",
+    "background_color": "#f3f0fa",
+    "theme_color": "#7c3aed",
+    "lang": "ru",
+    "categories": ["social", "communication"],
+    "icons": [
+        {
+            "src": "/assets/flor-logo.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "any"
+        },
+        {
+            "src": "/assets/flor-logo.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any"
+        }
+    ]
+}

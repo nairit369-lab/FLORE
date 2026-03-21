@@ -1,0 +1,26 @@
+# Зависимости
+node_modules/
+
+# Секреты и локальная среда
+.env
+.env.local
+.env.*.local
+
+# База и загрузки (локальные данные)
+*.db
+*.db-journal
+uploads/
+
+# Сборка Electron
+dist/
+out/
+
+# Логи и ОС
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp

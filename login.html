@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#7c3aed">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/assets/flor-logo.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <title>FLOR MESSENGER — Вход</title>
+    <script>
+        try {
+            var __fs = JSON.parse(localStorage.getItem('florMessengerSettings') || '{}');
+            if (__fs.theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+        } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="auth.css">
+</head>
+<body>
+    <div class="auth-layout">
+        <aside class="auth-aside" aria-hidden="true">
+            <div class="auth-aside-inner">
+                <img src="assets/flor-logo.png" alt="" class="brand-mark" width="56" height="56" />
+                <h2>FLOR<br />MESSENGER</h2>
+                <p>Общайтесь в чатах и голосовых комнатах без лишнего шума. Сообщения хранятся на сервере и передаются по защищённому соединению (HTTPS). Сквозное шифрование между устройствами в этой версии не используется.</p>
+            </div>
+        </aside>
+        <div class="auth-main">
+    <div class="auth-container">
+        <div class="auth-box">
+            <div class="logo">
+                <img src="assets/flor-logo.png" alt="" class="logo-img" width="48" height="48" />
+                <div class="brand-name">FLOR MESSENGER</div>
+                <h1>С возвращением</h1>
+                <p>Войдите в аккаунт, чтобы продолжить переписку.</p>
+            </div>
+
+            <form id="authForm">
+                <div class="form-group" id="usernameGroup">
+                    <label for="username">Имя пользователя</label>
+                    <input type="text" id="username" name="username">
+                </div>
+
+                <div class="form-group" id="emailGroup">
+                    <label for="email">Электронная почта</label>
+                    <input type="email" id="email" name="email" required autocomplete="email">
+                </div>
+
+                <div class="form-group">
+                    <label for="password">Пароль</label>
+                    <input type="password" id="password" name="password" required autocomplete="current-password">
+                </div>
+
+                <div class="form-group" id="confirmPasswordGroup" style="display: none;">
+                    <label for="confirmPassword">Повторите пароль</label>
+                    <input type="password" id="confirmPassword" name="confirmPassword" autocomplete="new-password">
+                </div>
+
+                <div class="form-group remember-row" id="rememberRow">
+                    <label class="remember-label"><input type="checkbox" id="rememberEmail" /> Запомнить email на этом устройстве</label>
+                </div>
+
+                <button type="submit" class="submit-btn" id="submitBtn">Войти</button>
+
+                <div class="switch-mode">
+                    <span id="switchText">Нет аккаунта?</span>
+                    <a href="#" id="switchLink">Регистрация</a>
+                </div>
+            </form>
+            <p class="auth-legal"><a href="privacy.html">Конфиденциальность</a> · <a href="terms.html">Условия использования</a></p>
+            <p class="auth-hint" style="font-size:12px;line-height:1.45;color:var(--flor-muted,#64748b);margin-top:12px;">Входите по адресу сервера, например <code>http://127.0.0.1:3000/login.html</code> (не открывайте HTML как файл с диска). Если сервер на другом ПК в сети: в консоли (F12) выполните <code>localStorage.setItem('florServerBase','http://IP:3000')</code> и обновите страницу.</p>
+        </div>
+    </div>
+        </div>
+    </div>
+
+    <script src="auth.js"></script>
+</body>
+</html>

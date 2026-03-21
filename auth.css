@@ -1,0 +1,375 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --flor-purple-900: #4c1d95;
+    --flor-purple-700: #6d28d9;
+    --flor-purple-500: #8b5cf6;
+    --flor-orchid: #d946ef;
+    --flor-purple-200: #ddd6fe;
+    --flor-purple-100: #ede9fe;
+    --flor-purple-50: #f5f3ff;
+    --flor-text: #1e1b2e;
+    --flor-muted: #6b6280;
+    --flor-border: #e9e4f4;
+    --flor-white: #ffffff;
+    --flor-font: 'Outfit', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+body {
+    font-family: var(--flor-font);
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    padding: 0;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+    background: radial-gradient(ellipse 80% 60% at 100% 0%, rgba(217, 70, 239, 0.08), transparent 50%),
+        radial-gradient(ellipse 60% 50% at 0% 100%, rgba(124, 58, 237, 0.07), transparent 45%), var(--flor-purple-50);
+    color: var(--flor-text);
+    -webkit-tap-highlight-color: transparent;
+}
+
+.auth-layout {
+    display: flex;
+    width: 100%;
+    min-height: 100vh;
+}
+
+.auth-aside {
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    padding: clamp(32px, 6vw, 64px);
+    width: 42%;
+    max-width: 520px;
+    background: linear-gradient(155deg, #3b0764 0%, var(--flor-purple-900) 25%, var(--flor-purple-700) 55%, #7c3aed 88%, var(--flor-orchid) 100%);
+    color: var(--flor-white);
+    position: relative;
+    overflow: hidden;
+}
+
+.auth-aside::before {
+    content: '';
+    position: absolute;
+    inset: -40%;
+    background: radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.12), transparent 40%),
+        radial-gradient(circle at 80% 80%, rgba(217, 70, 239, 0.25), transparent 35%);
+    pointer-events: none;
+}
+
+.auth-aside-inner {
+    position: relative;
+    z-index: 1;
+    max-width: 320px;
+}
+
+.auth-aside .brand-mark {
+    width: 56px;
+    height: 56px;
+    margin-bottom: 28px;
+    display: block;
+}
+
+.auth-aside h2 {
+    font-size: clamp(1.75rem, 4vw, 2.25rem);
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+    margin-bottom: 12px;
+}
+
+.auth-aside p {
+    font-size: 15px;
+    line-height: 1.55;
+    opacity: 0.88;
+    font-weight: 400;
+}
+
+.auth-main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 24px;
+    background: var(--flor-white);
+}
+
+.auth-container {
+    width: 100%;
+    max-width: 400px;
+    animation: fadeInUp 0.45s ease;
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(16px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.auth-box {
+    background: transparent;
+    border-radius: 0;
+    padding: 0;
+    box-shadow: none;
+}
+
+.logo {
+    text-align: left;
+    margin-bottom: 32px;
+}
+
+.logo-img {
+    width: 48px;
+    height: 48px;
+    display: block;
+    margin-bottom: 20px;
+}
+
+.logo h1 {
+    color: var(--flor-text);
+    font-size: 1.75rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 8px;
+}
+
+.logo .brand-name {
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--flor-purple-700);
+    margin-bottom: 6px;
+}
+
+.logo p {
+    color: var(--flor-muted);
+    font-size: 15px;
+    line-height: 1.5;
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--flor-muted);
+    margin-bottom: 8px;
+}
+
+.form-group input {
+    width: 100%;
+    padding: 12px 14px;
+    background: var(--flor-white);
+    border: 1px solid var(--flor-border);
+    border-radius: 10px;
+    color: var(--flor-text);
+    font-size: 15px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.form-group input:focus {
+    outline: none;
+    border-color: var(--flor-purple-200);
+    box-shadow: 0 0 0 3px rgba(109, 40, 217, 0.12);
+}
+
+.form-group input::placeholder {
+    color: #a8a0bc;
+}
+
+.submit-btn {
+    width: 100%;
+    padding: 14px;
+    background: var(--flor-purple-700);
+    border: none;
+    border-radius: 10px;
+    color: white;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.2s, transform 0.15s;
+    margin-top: 8px;
+}
+
+.submit-btn:hover {
+    background: var(--flor-purple-900);
+}
+
+.submit-btn:active {
+    transform: scale(0.99);
+}
+
+.switch-mode {
+    margin-top: 24px;
+    font-size: 14px;
+    color: var(--flor-muted);
+}
+
+.switch-mode a {
+    color: var(--flor-purple-700);
+    text-decoration: none;
+    font-weight: 600;
+    margin-left: 4px;
+}
+
+.switch-mode a:hover {
+    text-decoration: underline;
+}
+
+.remember-row {
+    margin-bottom: 8px;
+}
+
+.remember-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+    color: var(--flor-muted);
+    cursor: pointer;
+    user-select: none;
+}
+
+.remember-label input {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--flor-purple-700);
+}
+
+.error-message {
+    background-color: #7f1d1d;
+    color: white;
+    padding: 12px 14px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    font-size: 14px;
+    display: none;
+    animation: shake 0.3s ease;
+}
+
+.error-message.show {
+    display: block;
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-8px); }
+    75% { transform: translateX(8px); }
+}
+
+.success-message {
+    background-color: var(--flor-purple-700);
+    color: white;
+    padding: 12px 14px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    font-size: 14px;
+    display: none;
+}
+
+.success-message.show {
+    display: block;
+}
+
+.loading {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(30, 27, 46, 0.35);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    backdrop-filter: blur(2px);
+}
+
+.loading.show {
+    display: flex;
+}
+
+.spinner {
+    width: 44px;
+    height: 44px;
+    border: 3px solid rgba(255, 255, 255, 0.35);
+    border-top-color: var(--flor-white);
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (min-width: 900px) {
+    .auth-aside {
+        display: flex;
+    }
+}
+
+/* Тёмная тема (та же настройка florMessengerSettings.theme) */
+html[data-theme="dark"] {
+    --flor-purple-50: #12101a;
+    --flor-text: #f1ecf9;
+    --flor-muted: #b4a8cc;
+    --flor-border: #3f3658;
+    --flor-white: #181422;
+    --flor-purple-700: #a78bfa;
+    --flor-purple-200: #5b21b6;
+}
+
+html[data-theme="dark"] body {
+    background: var(--flor-purple-50);
+}
+
+html[data-theme="dark"] .auth-main {
+    background: #16121f;
+}
+
+html[data-theme="dark"] .logo .brand-name {
+    color: var(--flor-purple-700);
+}
+
+html[data-theme="dark"] .form-group input:focus {
+    box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.2);
+}
+
+html[data-theme="dark"] .switch-mode a {
+    color: var(--flor-purple-700);
+}
+
+html[data-theme="dark"] .loading {
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.auth-legal {
+    margin-top: 24px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--flor-muted);
+}
+
+.auth-legal a {
+    color: var(--flor-purple-700);
+    text-decoration: none;
+}
+
+.auth-legal a:hover {
+    text-decoration: underline;
+}

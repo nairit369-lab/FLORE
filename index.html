@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="description" content="FLOR MESSENGER — чаты, серверы, голосовые комнаты и личные сообщения.">
+    <meta name="theme-color" content="#7c3aed" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#1a1528" media="(prefers-color-scheme: dark)">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/assets/flor-logo.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <title>FLOR MESSENGER</title>
+    <script>
+        try {
+            var __fs = JSON.parse(localStorage.getItem('florMessengerSettings') || '{}');
+            if (__fs.theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+        } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="styles.css">
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="crypto-e2e.js"></script>
+</head>
+<body>
+    <!-- Server List (Left Sidebar) -->
+    <div class="server-list">
+        <div class="app-brand" title="FLOR MESSENGER">
+            <img src="assets/flor-logo.png" alt="" class="app-logo" width="36" height="36" />
+        </div>
+        <div class="server-icon home active" id="friendsBtn" title="Друзья и личные сообщения">
+            <svg width="28" height="28" viewBox="0 0 24 24">
+                <path fill="currentColor" d="M14 8.00598C14 10.211 12.206 12.006 10 12.006C7.795 12.006 6 10.211 6 8.00598C6 5.80098 7.795 4.00598 10 4.00598C12.206 4.00598 14 5.80098 14 8.00598ZM2 19.006C2 15.473 5.29 13.006 10 13.006C14.711 13.006 18 15.473 18 19.006V20.006H2V19.006Z"/>
+                <path fill="currentColor" d="M20.0001 20.006H22.0001V19.006C22.0001 16.4433 20.2697 14.4415 17.5213 13.5352C19.0621 14.4488 20.0001 16.0865 20.0001 18.006V20.006Z"/>
+                <path fill="currentColor" d="M14.8834 11.9077C16.6657 11.5044 18.0001 9.9077 18.0001 8.00598C18.0001 5.80098 16.2051 4.00598 14.0001 4.00598C13.6395 4.00598 13.2931 4.06115 12.9687 4.16115C13.6061 5.03115 14.0001 6.12115 14.0001 8.00598C14.0001 9.88598 13.6061 10.9785 12.9687 11.8485C13.2931 11.9485 13.6395 12.006 14.0001 12.006C14.3001 12.006 14.5961 11.9727 14.8834 11.9077Z"/>
+            </svg>
+        </div>
+        <div class="server-separator"></div>
+        <div class="server-icon" id="addServerBtn" title="Добавить сервер">
+            <svg width="24" height="24" viewBox="0 0 24 24">
+                <path fill="currentColor" d="M20 11H13V4C13 3.4 12.6 3 12 3C11.4 3 11 3.4 11 4V11H4C3.4 11 3 11.4 3 12C3 12.6 3.4 13 4 13H11V20C11 20.6 11.4 21 12 21C12.6 21 13 20.6 13 20V13H20C20.6 13 21 12.6 21 12C21 11.4 20.6 11 20 11Z"/>
+            </svg>
+        </div>
+    </div>
+
+    <!-- Channel List / DM List (Second Sidebar) -->
+    <div class="channel-list" id="channelList">
+        <div class="server-header" id="serverHeader">
+            <div class="server-name" id="serverName">Друзья</div>
+            <button type="button" class="server-dropdown" id="serverHeaderMenuBtn" aria-expanded="false" aria-haspopup="true" title="Меню">▼</button>
+        </div>
+        <div id="serverHeaderDropdown" class="server-header-dropdown hidden" role="menu"></div>
+
+        <!-- DM List (shown in Friends view) -->
+        <div id="dmListView" class="dm-list-view">
+            <div class="dm-search-bar">
+                <input type="text" id="dmSearchInput" placeholder="Найти или начать беседу">
+            </div>
+            <div class="channel-category">
+                <div class="category-header">
+                    <span>ЛИЧНЫЕ СООБЩЕНИЯ</span>
+                </div>
+                <div id="dmList" class="dm-list">
+                    <!-- DM items will be added here -->
+                </div>
+            </div>
+        </div>
+
+        <div id="channelsView" class="channels-view" style="display: none;">
+            <div id="channelsTreeRoot" class="channels-container" aria-label="Каналы сервера"></div>
+        </div>
+        
+        <div class="user-panel">
+            <div class="user-info">
+                <div class="user-avatar">U</div>
+                <div class="user-details">
+                    <div class="username">Пользователь</div>
+                    <div class="user-status">В сети</div>
+                </div>
+            </div>
+            <div class="user-controls">
+                <button class="control-btn" id="muteBtn" title="Микрофон">
+                    <svg class="icon-normal" width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C10.895 2 10 2.895 10 4V12C10 13.105 10.895 14 12 14C13.105 14 14 13.105 14 12V4C14 2.895 13.105 2 12 2ZM19 10V12C19 15.866 15.866 19 12 19C8.134 19 5 15.866 5 12V10H3V12C3 16.418 6.269 20.099 10.5 20.856V24H13.5V20.856C17.731 20.099 21 16.418 21 12V10H19Z"/></svg>
+                    <svg class="icon-slashed" style="display: none;" width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M12 14c1.105 0 2-.895 2-2V4c0-1.105-.895-2-2-2s-2 .895-2 2v8c0 1.105.895 2 2 2zM19 12v-2h-2v2c0 2.757-1.79 5.08-4.2 5.86v2.006h2.2v2H9.5v-2h2.2V17.86C9.29 17.08 7.5 14.757 7.5 12V10H5v2c0 3.53 2.61 6.43 6 6.92V22h2v-3.08c3.39-.49 6-3.39 6-6.92zm-2.293-9.293l-1.414-1.414L3 13.586l1.414 1.414L16.707 2.707z"/></svg>
+                </button>
+                <button class="control-btn" id="deafenBtn" title="Звук">
+                    <svg class="icon-normal" width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M3 10v4c0 .55.45 1 1 1h3l5 5V4L7 9H4c-.55 0-1 .45-1 1zm16.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM16 4.27v15.46c2.28-.94 4-3.25 4-5.99s-1.72-5.05-4-5.99z"/></svg>
+                    <svg class="icon-slashed" style="display: none;" width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M3 10v4c0 .55.45 1 1 1h3l5 5V4L7 9H4c-.55 0-1 .45-1 1zm16.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM16 4.27v15.46c2.28-.94 4-3.25 4-5.99s-1.72-5.05-4-5.99zM4.707 2.293L3.293 3.707 21.293 21.707l1.414-1.414L4.707 2.293z"/></svg>
+                </button>
+                <button type="button" class="control-btn" id="themeToggleBtn" title="Тёмная тема" aria-label="Переключить тему" aria-pressed="false"></button>
+                <button class="control-btn" id="settingsBtn" title="Настройки">
+                    <svg width="20" height="20" viewBox="0 0 24 24">
+                        <path fill="currentColor" d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87 C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58 c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96 c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6 s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content Area -->
+    <div class="main-content">
+        <!-- Server/Channel Chat View -->
+        <div id="chatView" class="chat-view" style="display: none;">
+            <div class="chat-header">
+                <div class="channel-info" id="chatHeaderInfo">
+                    <!-- Header will be dynamically populated -->
+                </div>
+                <div class="chat-controls">
+                    <input type="search" id="chatMessageSearch" class="chat-search-input" placeholder="Поиск в чате…" autocomplete="off" />
+                    <button type="button" class="icon-btn" id="exportChatBtn" title="Скачать историю чата">⬇</button>
+                    <button type="button" class="icon-btn" id="bookmarksPanelBtn" title="Закладки">★</button>
+                    <button type="button" class="icon-btn" id="membersBtn" title="Участники и приглашения" hidden>
+                        <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M14 8.00598C14 10.211 12.206 12.006 10 12.006C7.795 12.006 6 10.211 6 8.00598C6 5.80098 7.795 4.00598 10 4.00598C12.206 4.00598 14 5.80098 14 8.00598ZM2 19.006C2 15.473 5.29 13.006 10 13.006C14.711 13.006 18 15.473 18 19.006V20.006H2V19.006Z"/></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="messages" id="messagesContainer"></div>
+            <div class="message-input-container">
+                <div class="message-input-wrapper">
+                    <button type="button" class="attach-btn" title="Вложение"><svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C11.5 2 11 2.19 10.59 2.59L2.59 10.59C1.8 11.37 1.8 12.63 2.59 13.41C3.37 14.2 4.63 14.2 5.41 13.41L11 7.83V16C11 16.55 11.45 17 12 17C12.55 17 13 16.55 13 16V7.83L18.59 13.41C19.37 14.2 20.63 14.2 21.41 13.41C22.2 12.63 22.2 11.37 21.41 10.59L13.41 2.59C13 2.19 12.5 2 12 2Z"/></svg></button>
+                    <input type="text" id="messageInput" placeholder="Написать сообщение…" enterkeyhint="send" />
+                    <button type="button" class="message-send-btn" id="messageSendBtn" title="Отправить" aria-label="Отправить">➤</button>
+                    <div class="emoji-btn" title="Эмодзи"><svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.486 2 2 6.486 2 12C2 17.514 6.486 22 12 22C17.514 22 22 17.514 22 12C22 6.486 17.514 2 12 2ZM15.5 8C16.328 8 17 8.672 17 9.5C17 10.328 16.328 11 15.5 11C14.672 11 14 10.328 14 9.5C14 8.672 14.672 8 15.5 8ZM8.5 8C9.328 8 10 8.672 10 9.5C10 10.328 9.328 11 8.5 11C7.672 11 7 10.328 7 9.5C7 8.672 7.672 8 8.5 8ZM12 17.5C9.656 17.5 7.586 16.019 6.673 13.852C6.594 13.643 6.673 13.407 6.852 13.266C7.031 13.125 7.281 13.117 7.469 13.242C8.766 14.109 10.352 14.5 12 14.5C13.648 14.5 15.234 14.109 16.531 13.242C16.719 13.117 16.969 13.125 17.148 13.266C17.327 13.407 17.406 13.643 17.327 13.852C16.414 16.019 14.344 17.5 12 17.5Z"/></svg></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Friends View (Main Content) -->
+        <div id="friendsView" class="friends-main-view" style="display: none;">
+            <div class="friends-header">
+                <div class="friends-tabs">
+                    <button class="friends-tab active" data-tab="online">В сети</button>
+                    <button class="friends-tab" data-tab="all">Все</button>
+                    <button class="friends-tab" data-tab="pending">Запросы</button>
+                    <button class="friends-tab" data-tab="add">Добавить</button>
+                </div>
+            </div>
+            <div class="friends-content-wrapper">
+                <div id="friendsOnline" class="friends-list active-tab"></div>
+                <div id="friendsAll" class="friends-list"></div>
+                <div id="friendsPending" class="friends-list"></div>
+                <div id="friendsAdd" class="friends-list">
+                    <div class="add-friend-form">
+                        <h3>ДОБАВИТЬ ДРУГА</h3>
+                        <p>Найдите пользователя по имени и отправьте заявку в друзья.</p>
+                        <div class="add-friend-input-wrapper">
+                            <input type="text" id="searchUserInput" placeholder="Имя пользователя" />
+                            <button id="searchUserBtn">Найти</button>
+                        </div>
+                        <div id="searchResults"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Voice/Video Call Interface (hidden by default) -->
+    <div id="callInterface" class="call-interface hidden">
+        <div class="call-header">
+            <div class="call-channel-name">Голосовой канал</div>
+            <button class="close-call-btn" id="closeCallBtn">✕</button>
+        </div>
+        <div class="call-participants">
+            <div class="participant">
+                <video id="localVideo" autoplay muted playsinline></video>
+                <div class="participant-name">Вы</div>
+            </div>
+            <div id="remoteParticipants"></div>
+        </div>
+        <div class="call-controls-main">
+            <button id="toggleVideoBtn" class="call-control-btn">
+                <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M21 6.5L17 10.5V7C17 6.45 16.55 6 16 6H4C3.45 6 3 6.45 3 7V17C3 17.55 3.45 18 4 18H16C16.55 18 17 17.55 17 17V13.5L21 17.5V6.5Z"/></svg>
+            </button>
+            <button id="toggleAudioBtn" class="call-control-btn">
+                <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C10.895 2 10 2.895 10 4V12C10 13.105 10.895 14 12 14C13.105 14 14 13.105 14 12V4C14 2.895 13.105 2 12 2ZM19 10V12C19 15.866 15.866 19 12 19C8.134 19 5 15.866 5 12V10H3V12C3 16.418 6.269 20.099 10.5 20.856V24H13.5V20.856C17.731 20.099 21 16.418 21 12V10H19Z"/></svg>
+            </button>
+            <button id="toggleScreenBtn" class="call-control-btn">
+                <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M21 2H3C1.89 2 1 2.89 1 4V16C1 17.11 1.89 18 3 18H10V20H8V22H16V20H14V18H21C22.11 18 23 17.11 23 16V4C23 2.89 22.11 2 21 2ZM21 16H3V4H21V16Z"/></svg>
+            </button>
+        </div>
+    </div>
+
+    <!-- Incoming Call Notification -->
+    <div id="incomingCall" class="incoming-call hidden">
+        <div class="incoming-call-content">
+            <div class="caller-info">
+                <div class="caller-avatar"></div>
+                <div class="caller-name"></div>
+            </div>
+            <p>звонит вам…</p>
+            <div class="incoming-call-actions">
+                <button id="acceptCallBtn" class="call-action-btn accept">Принять</button>
+                <button id="rejectCallBtn" class="call-action-btn reject">Отклонить</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Закладки -->
+    <div id="bookmarksOverlay" class="settings-overlay hidden" aria-hidden="true">
+        <div class="settings-panel settings-panel--wide" role="dialog" aria-labelledby="bookmarksTitle">
+            <h2 id="bookmarksTitle">Закладки</h2>
+            <p class="settings-hint">Избранные сообщения видны только в этом браузере.</p>
+            <div id="bookmarksList" class="bookmarks-list"></div>
+            <button type="button" class="settings-btn" id="bookmarksCloseBtn">Закрыть</button>
+        </div>
+    </div>
+
+    <!-- Настройки сервера (владелец) -->
+    <div id="serverSettingsOverlay" class="settings-overlay hidden" aria-hidden="true">
+        <div class="settings-panel settings-panel--wide flor-scroll" role="dialog" aria-labelledby="serverSettingsTitle">
+            <h2 id="serverSettingsTitle">Настройки сервера</h2>
+            <div class="form-group-settings">
+                <label for="serverSettingsName">Название</label>
+                <input type="text" id="serverSettingsName" maxlength="80" />
+            </div>
+            <div class="form-group-settings">
+                <label for="serverSettingsIcon">Значок сервера (эмодзи или буквы, до 16 символов)</label>
+                <input type="text" id="serverSettingsIcon" maxlength="16" autocomplete="off" />
+            </div>
+            <div id="serverSettingsOwnerExtras" class="server-settings-owner-extras hidden">
+                <h3 class="settings-subheading">Новый канал</h3>
+                <p class="settings-hint">Только владелец может создавать каналы.</p>
+                <div class="form-group-settings">
+                    <label for="serverSettingsNewChName">Имя канала</label>
+                    <input type="text" id="serverSettingsNewChName" maxlength="40" placeholder="например, музыка" autocomplete="off" />
+                </div>
+                <div class="form-group-settings">
+                    <label for="serverSettingsNewChType">Тип</label>
+                    <select id="serverSettingsNewChType">
+                        <option value="text">Текстовый</option>
+                        <option value="voice">Голосовой</option>
+                    </select>
+                </div>
+                <button type="button" class="settings-btn primary" id="serverSettingsCreateChBtn">Создать канал</button>
+            </div>
+            <div class="settings-actions settings-actions--row">
+                <button type="button" class="settings-btn primary" id="serverSettingsSaveBtn">Сохранить</button>
+                <button type="button" class="settings-btn" id="serverSettingsCloseBtn">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="membersOverlay" class="settings-overlay hidden" aria-hidden="true">
+        <div class="settings-panel settings-panel--wide flor-scroll" role="dialog" aria-labelledby="membersTitle">
+            <h2 id="membersTitle">Участники группы</h2>
+            <p class="settings-hint" id="membersSubtitle"></p>
+            <div class="form-group-settings">
+                <label for="inviteUsernameInput">Добавить друга по нику</label>
+                <div class="settings-actions settings-actions--row" style="flex-wrap: wrap; gap: 8px;">
+                    <input type="text" id="inviteUsernameInput" maxlength="64" placeholder="username" autocomplete="username" style="flex: 1; min-width: 140px;" />
+                    <button type="button" class="settings-btn primary" id="inviteMemberBtn">Пригласить</button>
+                </div>
+                <p class="settings-hint">В группу можно добавить только пользователя из списка друзей.</p>
+            </div>
+            <h3 class="settings-subheading">Список</h3>
+            <div id="membersList" class="members-list flor-scroll"></div>
+            <button type="button" class="settings-btn" id="membersCloseBtn">Закрыть</button>
+        </div>
+    </div>
+
+    <div id="channelSettingsOverlay" class="settings-overlay hidden" aria-hidden="true">
+        <div class="settings-panel flor-scroll" role="dialog">
+            <h2 id="channelSettingsTitle">Канал</h2>
+            <p class="settings-hint" id="channelSettingsSubtitle"></p>
+            <div class="form-group-settings">
+                <label class="checkbox-row"><input type="checkbox" id="chSlowLocal" /> Напоминание не отправлять много сообщений подряд</label>
+            </div>
+            <div class="form-group-settings">
+                <label for="chVoiceBitrate">Предпочтительное качество голоса (кбит/с)</label>
+                <select id="chVoiceBitrate">
+                    <option value="32">Экономия трафика</option>
+                    <option value="64" selected>Обычное</option>
+                    <option value="96">Выше качество</option>
+                    <option value="128">Максимум</option>
+                </select>
+            </div>
+            <div class="form-group-settings">
+                <label for="chVoiceLimit">Желаемый лимит участников в голосе (для себя)</label>
+                <input type="number" id="chVoiceLimit" min="2" max="99" value="32" />
+            </div>
+            <div class="settings-actions settings-actions--row">
+                <button type="button" class="settings-btn primary" id="channelSettingsSaveBtn">Сохранить</button>
+                <button type="button" class="settings-btn" id="channelSettingsCloseBtn">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Настройки: центр с вкладками -->
+    <div id="settingsOverlay" class="settings-overlay hidden" aria-hidden="true">
+        <div class="settings-hub" role="dialog" aria-labelledby="settingsTitle">
+            <div class="settings-hub-header">
+                <h2 id="settingsTitle">Настройки</h2>
+                <button type="button" class="settings-hub-close" id="settingsCloseBtn" aria-label="Закрыть">✕</button>
+            </div>
+            <div class="settings-hub-body">
+                <nav class="settings-nav" id="settingsNav" aria-label="Разделы настроек">
+                    <button type="button" class="settings-nav-btn active" data-panel="profile">Профиль</button>
+                    <button type="button" class="settings-nav-btn" data-panel="privacy">Приватность</button>
+                    <button type="button" class="settings-nav-btn" data-panel="notifications">Уведомления</button>
+                    <button type="button" class="settings-nav-btn" data-panel="security">Безопасность</button>
+                    <button type="button" class="settings-nav-btn" data-panel="interface">Интерфейс</button>
+                    <button type="button" class="settings-nav-btn" data-panel="devices">Микрофон и звук</button>
+                    <button type="button" class="settings-nav-btn" data-panel="appearance">Чат и фон</button>
+                </nav>
+                <div class="settings-panels flor-scroll">
+                    <section class="settings-panel-page active" data-panel="profile">
+                        <h3>Профиль</h3>
+                        <p class="settings-hint">Аватар сохраняется в аккаунте. Имя и описание ниже видите только вы в этом приложении.</p>
+                        <div class="form-group-settings">
+                            <label for="settingsDisplayName">Как показывать имя внизу слева</label>
+                            <input type="text" id="settingsDisplayName" maxlength="64" autocomplete="name" />
+                        </div>
+                        <div class="form-group-settings">
+                            <label for="settingsBio">О себе</label>
+                            <textarea id="settingsBio" rows="3" maxlength="280" placeholder="Коротко о себе…"></textarea>
+                        </div>
+                        <div class="form-group-settings">
+                            <label for="settingsAvatarInput">Значок в аватаре (до 4 символов)</label>
+                            <input type="text" id="settingsAvatarInput" maxlength="4" autocomplete="off" />
+                        </div>
+                    </section>
+                    <section class="settings-panel-page" data-panel="privacy">
+                        <h3>Приватность</h3>
+                        <p class="settings-hint">Дополнительные ограничения для интерфейса. Основные правила чатов задаёт администратор сервера.</p>
+                        <label class="checkbox-row"><input type="checkbox" id="privacyDmFriendsOnly" /> Писать в личку могут только друзья</label>
+                        <label class="checkbox-row"><input type="checkbox" id="privacyGroupInvitesFriends" /> Приглашения в группы только от друзей</label>
+                        <label class="checkbox-row"><input type="checkbox" id="privacyHideOnline" /> Показывать статус «Невидимка»</label>
+                    </section>
+                    <section class="settings-panel-page" data-panel="notifications">
+                        <h3>Уведомления</h3>
+                        <label class="checkbox-row"><input type="checkbox" id="settingsNotifyDesktop" /> Уведомления рабочего стола</label>
+                        <label class="checkbox-row"><input type="checkbox" id="settingsSoundInApp" /> Звук в открытом чате</label>
+                        <h4>Не беспокоить</h4>
+                        <label class="checkbox-row"><input type="checkbox" id="dndEnabled" /> Включить по расписанию</label>
+                        <div class="form-row">
+                            <label>С <input type="time" id="dndStart" value="22:00" /></label>
+                            <label>до <input type="time" id="dndEnd" value="08:00" /></label>
+                        </div>
+                    </section>
+                    <section class="settings-panel-page" data-panel="security">
+                        <h3>Безопасность</h3>
+                        <p class="settings-hint">Недавние входы в этом браузере (для вашего контроля).</p>
+                        <div id="loginHistoryList" class="login-history-list"></div>
+                        <h4>Смена пароля</h4>
+                        <div class="form-group-settings">
+                            <label for="pwdCurrent">Текущий пароль</label>
+                            <input type="password" id="pwdCurrent" autocomplete="current-password" />
+                        </div>
+                        <div class="form-group-settings">
+                            <label for="pwdNew">Новый пароль</label>
+                            <input type="password" id="pwdNew" autocomplete="new-password" />
+                        </div>
+                        <button type="button" class="settings-btn primary" id="pwdChangeBtn">Сменить пароль</button>
+                    </section>
+                    <section class="settings-panel-page" data-panel="interface">
+                        <h3>Интерфейс</h3>
+                        <p class="settings-hint">Тема также доступна кнопкой внизу слева.</p>
+                        <label class="checkbox-row"><input type="checkbox" id="settingsCompactMessages" /> Компактные сообщения</label>
+                        <div class="form-group-settings">
+                            <label for="fontScaleRange">Масштаб шрифта (<span id="fontScaleVal">100</span>%)</label>
+                            <input type="range" id="fontScaleRange" min="85" max="130" value="100" />
+                        </div>
+                        <div class="form-group-settings">
+                            <label for="sidebarWidthRange">Ширина боковой колонки (<span id="sidebarWidthVal">260</span>px)</label>
+                            <input type="range" id="sidebarWidthRange" min="220" max="360" value="260" />
+                        </div>
+                        <label class="checkbox-row"><input type="checkbox" id="linksOpenNewTab" /> Ссылки в чатах открывать в новой вкладке</label>
+                        <h4>Горячие клавиши</h4>
+                        <ul class="hotkey-list">
+                            <li><kbd>Ctrl</kbd> + <kbd>K</kbd> — фокус поиска в чате</li>
+                            <li><kbd>Esc</kbd> — закрыть модальные окна</li>
+                        </ul>
+                    </section>
+                    <section class="settings-panel-page" data-panel="devices">
+                        <h3>Микрофон и наушники</h3>
+                        <p class="settings-hint">Выбор устройства применится при следующем подключении к звонку. Проверка микрофона — ниже.</p>
+                        <div class="form-group-settings">
+                            <label for="audioInputDevice">Микрофон</label>
+                            <select id="audioInputDevice"></select>
+                        </div>
+                        <div class="form-group-settings">
+                            <label for="audioOutputDevice">Вывод звука</label>
+                            <select id="audioOutputDevice"></select>
+                        </div>
+                        <button type="button" class="settings-btn primary" id="refreshDevicesBtn">Обновить список устройств</button>
+                        <div class="mic-test-wrap">
+                            <button type="button" class="settings-btn" id="micTestStartBtn">Проверить микрофон</button>
+                            <button type="button" class="settings-btn" id="micTestStopBtn" hidden>Остановить</button>
+                            <div class="mic-meter" aria-hidden="true"><div class="mic-meter-fill" id="micMeterFill"></div></div>
+                        </div>
+                    </section>
+                    <section class="settings-panel-page" data-panel="appearance">
+                        <h3>Оформление чата</h3>
+                        <p class="settings-hint">Фон и размытие в области сообщений.</p>
+                        <div class="form-group-settings">
+                            <label for="chatWallpaperPreset">Пресет фона</label>
+                            <select id="chatWallpaperPreset">
+                                <option value="">Без фона</option>
+                                <option value="purple">Фиолетовый градиент</option>
+                                <option value="night">Ночной градиент</option>
+                                <option value="mint">Мятный</option>
+                            </select>
+                        </div>
+                        <div class="form-group-settings">
+                            <label for="chatWallpaperUrl">Свой URL картинки (опционально)</label>
+                            <input type="url" id="chatWallpaperUrl" placeholder="https://…" />
+                        </div>
+                        <div class="form-group-settings">
+                            <label for="chatWallpaperBlur">Размытие фона (<span id="chatBlurVal">0</span>px)</label>
+                            <input type="range" id="chatWallpaperBlur" min="0" max="24" value="0" />
+                        </div>
+                    </section>
+                </div>
+            </div>
+            <div class="settings-hub-footer">
+                <div class="settings-footer-legal">
+                    <a href="privacy.html" target="_blank" rel="noopener noreferrer">Конфиденциальность</a>
+                    <span aria-hidden="true">·</span>
+                    <a href="terms.html" target="_blank" rel="noopener noreferrer">Условия</a>
+                </div>
+                <p class="settings-security-note settings-security-note--short">Не передавайте пароли и платёжные данные в чатах. Для максимальной приватности используйте известные вам сервисы с сквозным шифрованием.</p>
+                <button type="button" class="settings-btn primary" id="settingsSaveBtn">Сохранить</button>
+                <button type="button" class="settings-btn danger" id="settingsLogoutBtn">Выйти</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
