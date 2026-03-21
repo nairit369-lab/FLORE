@@ -253,14 +253,56 @@ if (!fs.existsSync(uploadsDir)) {
 }
 app.use('/uploads', express.static(uploadsDir));
 
+function multerFilenameFromMime(originalname, mimetype) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const mime = String(mimetype || '')
+        .toLowerCase()
+        .split(';')[0]
+        .trim();
+    const origExt = path.extname(originalname || '').toLowerCase();
+    const mimeToExt = {
+        'image/jpeg': '.jpg',
+        'image/jpg': '.jpg',
+        'image/png': '.png',
+        'image/gif': '.gif',
+        'image/webp': '.webp',
+        'image/svg+xml': '.svg',
+        'application/pdf': '.pdf',
+        'application/msword': '.doc',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+        'text/plain': '.txt',
+        'audio/mpeg': '.mp3',
+        'audio/mp3': '.mp3',
+        'audio/webm': '.webm',
+        'audio/ogg': '.ogg',
+        'audio/opus': '.opus',
+        'audio/wav': '.wav',
+        'audio/x-wav': '.wav',
+        'audio/mp4': '.m4a',
+        'audio/x-m4a': '.m4a',
+        'audio/aac': '.aac',
+        'video/mp4': '.mp4',
+        'video/webm': '.webm',
+        'video/quicktime': '.mov',
+        'application/zip': '.zip',
+        'application/x-rar-compressed': '.rar'
+    };
+    let ext = mimeToExt[mime];
+    if (!ext && origExt && /^\.[a-z0-9]{1,10}$/i.test(origExt)) {
+        ext = origExt;
+    }
+    if (!ext) ext = '.bin';
+    if (ext === '.jpeg') ext = '.jpg';
+    return `${uniqueSuffix}${ext}`;
+}
+
 // Configure multer for file uploads
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, uploadsDir);
     },
     filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + '-' + file.originalname);
+        cb(null, multerFilenameFromMime(file.originalname, file.mimetype));
     }
 });
 
@@ -272,12 +314,47 @@ const upload = multer({
         const allowedMimeTypes = [
             'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
             'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'text/plain', 'audio/mpeg', 'audio/mp3', 'video/mp4', 'video/webm', 'video/quicktime',
-            'application/zip', 'application/x-rar-compressed'
+            'text/plain',
+            'audio/mpeg',
+            'audio/mp3',
+            'audio/webm',
+            'audio/ogg',
+            'audio/opus',
+            'audio/wav',
+            'audio/x-wav',
+            'audio/mp4',
+            'audio/x-m4a',
+            'audio/aac',
+            'video/mp4',
+            'video/webm',
+            'video/quicktime',
+            'application/zip',
+            'application/x-rar-compressed'
         ];
-        
-        const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.pdf', '.doc', '.docx',
-                                   '.txt', '.mp3', '.mp4', '.webm', '.mov', '.zip', '.rar'];
+
+        const allowedExtensions = [
+            '.jpg',
+            '.jpeg',
+            '.png',
+            '.gif',
+            '.webp',
+            '.svg',
+            '.pdf',
+            '.doc',
+            '.docx',
+            '.txt',
+            '.mp3',
+            '.mp4',
+            '.webm',
+            '.mov',
+            '.zip',
+            '.rar',
+            '.ogg',
+            '.opus',
+            '.wav',
+            '.m4a',
+            '.aac'
+        ];
         
         const ext = path.extname(file.originalname).toLowerCase();
         
@@ -499,12 +576,16 @@ app.post(
     profileImageUpload.single('file'),
     async (req, res) => {
         try {
-            const kind = String((req.body && req.body.kind) || '').trim();
+            const kind = String(
+                (req.query && req.query.kind) || (req.body && req.body.kind) || ''
+            ).trim();
             if (!req.file) {
                 return res.status(400).json({ error: 'Нет файла' });
             }
             if (kind !== 'avatar' && kind !== 'banner') {
-                return res.status(400).json({ error: 'Укажите kind: avatar или banner' });
+                return res.status(400).json({
+                    error: 'Укажите kind в адресе: ?kind=avatar или ?kind=banner'
+                });
             }
             await fileDB.create(
                 req.file.filename,
@@ -535,6 +616,73 @@ app.post(
         }
     }
 );
+
+app.delete('/api/messages/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const messageId = parseInt(req.params.messageId, 10);
+        if (Number.isNaN(messageId)) {
+            return res.status(400).json({ error: 'Некорректный id' });
+        }
+        const meta = await messageDB.getMeta(messageId);
+        if (!meta) {
+            return res.status(404).json({ error: 'Сообщение не найдено' });
+        }
+        if (Number(meta.user_id) !== Number(req.user.id)) {
+            return res.status(403).json({ error: 'Можно удалять только свои сообщения' });
+        }
+        const access = await assertChannelMember(req.user.id, meta.channel_id);
+        if (!access.ok) {
+            return res.status(403).json({ error: access.error || 'Нет доступа' });
+        }
+        const ch = await channelDB.getById(meta.channel_id);
+        if (!ch) {
+            return res.status(404).json({ error: 'Канал не найден' });
+        }
+        const result = await messageDB.deleteOwn(messageId, req.user.id);
+        if (!result.changes) {
+            return res.status(404).json({ error: 'Не удалено' });
+        }
+        io.to(`server-${ch.server_id}`).emit('message-deleted', {
+            channelId: meta.channel_id,
+            messageId
+        });
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('DELETE message:', error);
+        res.status(500).json({ error: 'Не удалось удалить сообщение' });
+    }
+});
+
+app.delete('/api/dm-messages/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const messageId = parseInt(req.params.messageId, 10);
+        if (Number.isNaN(messageId)) {
+            return res.status(400).json({ error: 'Некорректный id' });
+        }
+        const dm = await dmDB.getById(messageId);
+        if (!dm) {
+            return res.status(404).json({ error: 'Сообщение не найдено' });
+        }
+        if (Number(dm.sender_id) !== Number(req.user.id)) {
+            return res.status(403).json({ error: 'Можно удалять только свои сообщения' });
+        }
+        try {
+            await dmDB.deleteReactionsFor(messageId);
+        } catch (re) {
+            console.warn('dm reactions delete:', re && re.message);
+        }
+        const result = await dmDB.deleteOwnMessage(messageId, req.user.id);
+        if (!result.changes) {
+            return res.status(404).json({ error: 'Не удалено' });
+        }
+        emitToUserSockets(dm.sender_id, 'dm-message-deleted', { messageId });
+        emitToUserSockets(dm.receiver_id, 'dm-message-deleted', { messageId });
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('DELETE dm message:', error);
+        res.status(500).json({ error: 'Не удалось удалить сообщение' });
+    }
+});
 
 app.get('/api/users/:userId/public', authenticateToken, async (req, res) => {
     try {
@@ -650,6 +798,45 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
     }
 });
 
+/** Голосовые и прочие аудио в ЛС (channel_id = NULL) */
+app.post('/api/dm/upload', authenticateToken, upload.single('file'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'Нет файла' });
+        }
+        const mt = String(req.file.mimetype || '').toLowerCase();
+        if (!mt.startsWith('audio/')) {
+            return res.status(400).json({ error: 'Разрешены только аудиофайлы' });
+        }
+        const receiverId = parseInt(req.body && req.body.receiverId, 10);
+        if (Number.isNaN(receiverId)) {
+            return res.status(400).json({ error: 'Некорректный получатель' });
+        }
+        const friendsOk = await friendDB.checkFriendship(req.user.id, receiverId);
+        if (!friendsOk) {
+            return res.status(403).json({ error: 'Можно отправлять только друзьям' });
+        }
+        await fileDB.create(
+            req.file.filename,
+            req.file.path,
+            req.file.mimetype,
+            req.file.size,
+            req.user.id,
+            null
+        );
+        res.json({
+            id: req.file.filename,
+            filename: req.file.originalname,
+            url: `/uploads/${req.file.filename}`,
+            type: req.file.mimetype,
+            size: req.file.size
+        });
+    } catch (error) {
+        console.error('DM upload error:', error);
+        res.status(500).json({ error: 'Не удалось загрузить' });
+    }
+});
+
 // Get messages by channel (только участники сервера)
 app.get('/api/messages/:channelId', authenticateToken, async (req, res) => {
     try {
@@ -732,6 +919,34 @@ app.get('/api/dm/:userId', authenticateToken, async (req, res) => {
     }
 });
 
+/** Пометить все сообщения от partnerId ко мне как прочитанные; собеседник получит socket dm-read-receipt (все вкладки/устройства). */
+app.post('/api/dm/read', authenticateToken, async (req, res) => {
+    try {
+        const partnerId = parseInt(req.body && req.body.partnerId, 10);
+        if (Number.isNaN(partnerId)) {
+            return res.status(400).json({ error: 'Некорректный собеседник' });
+        }
+        if (partnerId === req.user.id) {
+            return res.status(400).json({ error: 'Некорректный запрос' });
+        }
+        const allowed = await friendDB.checkFriendship(req.user.id, partnerId);
+        if (!allowed) {
+            return res.status(403).json({ error: 'Нет доступа' });
+        }
+        const { ids } = await dmDB.markIncomingReadReturningIds(req.user.id, partnerId);
+        if (ids.length) {
+            emitToUserSockets(partnerId, 'dm-read-receipt', {
+                readerId: req.user.id,
+                messageIds: ids
+            });
+        }
+        res.json({ ok: true, messageIds: ids });
+    } catch (error) {
+        console.error('POST /api/dm/read:', error);
+        res.status(500).json({ error: 'Не удалось обновить статус' });
+    }
+});
+
 // Server routes
 app.post('/api/servers', authenticateToken, async (req, res) => {
     try {
@@ -798,15 +1013,28 @@ app.patch('/api/servers/:serverId', authenticateToken, async (req, res) => {
         }
         const { name, icon } = req.body || {};
         const patch = {};
-        if (name !== undefined) {
+        if (name !== undefined && name !== null) {
             const t = String(name).trim();
-            if (t.length < 2) {
-                return res.status(400).json({ error: 'Название не короче 2 символов' });
+            if (t.length > 0) {
+                if (t.length < 2) {
+                    return res.status(400).json({ error: 'Название не короче 2 символов' });
+                }
+                patch.name = t;
             }
-            patch.name = t;
         }
-        if (icon !== undefined) {
-            patch.icon = String(icon).trim().slice(0, 16) || srv.icon;
+        if (icon !== undefined && icon !== null) {
+            const ic = String(icon).trim();
+            if (ic.length > 0) {
+                if (ic.startsWith('/uploads/') || /^https?:\/\//i.test(ic)) {
+                    patch.icon = ic.slice(0, 512);
+                } else {
+                    patch.icon = ic.slice(0, 16);
+                }
+            }
+        }
+        if (Object.keys(patch).length === 0) {
+            const next = await serverDB.getById(serverId);
+            return res.json(next);
         }
         await serverDB.update(serverId, patch);
         const next = await serverDB.getById(serverId);
@@ -827,12 +1055,14 @@ app.get('/api/servers/:serverId/members', authenticateToken, async (req, res) =>
             return res.status(403).json({ error: 'Нет доступа к серверу' });
         }
         const members = await serverDB.getMembers(serverId);
+        const srv = await serverDB.getById(serverId);
         res.json(
             members.map((m) => ({
                 id: m.id,
                 username: m.username,
                 avatar: m.avatar,
                 status: m.status,
+                isOwner: srv && Number(srv.owner_id) === Number(m.id),
                 identityPublicJwk: mapUserIdentityJwk(m)
             }))
         );
@@ -840,6 +1070,78 @@ app.get('/api/servers/:serverId/members', authenticateToken, async (req, res) =>
         res.status(500).json({ error: 'Failed to get server members' });
     }
 });
+
+app.delete('/api/servers/:serverId/members/:userId', authenticateToken, async (req, res) => {
+    try {
+        const serverId = parseInt(req.params.serverId, 10);
+        const targetId = parseInt(req.params.userId, 10);
+        if (Number.isNaN(serverId) || Number.isNaN(targetId)) {
+            return res.status(400).json({ error: 'Некорректный запрос' });
+        }
+        if (!(await serverDB.isMember(serverId, req.user.id))) {
+            return res.status(403).json({ error: 'Нет доступа к серверу' });
+        }
+        const srv = await serverDB.getById(serverId);
+        if (!srv) {
+            return res.status(404).json({ error: 'Сервер не найден' });
+        }
+        const isOwner = Number(srv.owner_id) === Number(req.user.id);
+        const isSelf = Number(targetId) === Number(req.user.id);
+        if (!isSelf && !isOwner) {
+            return res.status(403).json({ error: 'Удалять участников может только владелец' });
+        }
+        if (Number(targetId) === Number(srv.owner_id)) {
+            return res.status(400).json({ error: 'Нельзя удалить владельца группы' });
+        }
+        const ch = await serverDB.removeMember(serverId, targetId);
+        if (!ch.changes) {
+            return res.status(404).json({ error: 'Участник не найден' });
+        }
+        const kicked = Array.from(users.values()).find((u) => u.id === targetId);
+        if (kicked) {
+            io.to(kicked.socketId).emit('server-membership-update', { serverId, removed: true });
+        }
+        io.to(`server-${serverId}`).emit('server-membership-update', { serverId });
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('DELETE server member:', error);
+        res.status(500).json({ error: 'Не удалось удалить участника' });
+    }
+});
+
+app.post(
+    '/api/servers/:serverId/icon',
+    authenticateToken,
+    profileImageUpload.single('file'),
+    async (req, res) => {
+        try {
+            const serverId = parseInt(req.params.serverId, 10);
+            if (Number.isNaN(serverId) || !req.file) {
+                return res.status(400).json({ error: 'Некорректный запрос' });
+            }
+            const srv = await serverDB.getById(serverId);
+            if (!srv || Number(srv.owner_id) !== Number(req.user.id)) {
+                return res.status(403).json({ error: 'Только владелец может менять иконку' });
+            }
+            await fileDB.create(
+                req.file.filename,
+                req.file.path,
+                req.file.mimetype,
+                req.file.size,
+                req.user.id,
+                null
+            );
+            const url = `/uploads/${req.file.filename}`;
+            await serverDB.update(serverId, { icon: url });
+            const next = await serverDB.getById(serverId);
+            io.to(`server-${serverId}`).emit('server-membership-update', { serverId });
+            res.json({ url, server: next });
+        } catch (error) {
+            console.error('server icon:', error);
+            res.status(500).json({ error: 'Не удалось загрузить иконку' });
+        }
+    }
+);
 
 app.get('/api/channels/:channelId/e2e-wrap', authenticateToken, async (req, res) => {
     try {
@@ -993,6 +1295,57 @@ app.post('/api/servers/:serverId/channels', authenticateToken, async (req, res) 
     }
 });
 
+/** Удалить канал (только владелец; нельзя удалить последний текстовый или последний голосовой) */
+app.delete('/api/servers/:serverId/channels/:channelId', authenticateToken, async (req, res) => {
+    try {
+        const serverId = parseInt(req.params.serverId, 10);
+        const channelId = parseInt(req.params.channelId, 10);
+        if (Number.isNaN(serverId) || Number.isNaN(channelId)) {
+            return res.status(400).json({ error: 'Некорректные параметры' });
+        }
+        if (!(await serverDB.isMember(serverId, req.user.id))) {
+            return res.status(403).json({ error: 'Нет доступа к серверу' });
+        }
+        const srv = await serverDB.getById(serverId);
+        if (!srv || srv.owner_id !== req.user.id) {
+            return res.status(403).json({ error: 'Только владелец может удалять каналы' });
+        }
+        const ch = await channelDB.getById(channelId);
+        if (!ch || Number(ch.server_id) !== serverId) {
+            return res.status(404).json({ error: 'Канал не найден' });
+        }
+        const t = String(ch.type || '').trim().toLowerCase();
+        if (t === 'text') {
+            const n = await channelDB.countByServerAndType(serverId, 'text');
+            if (n <= 1) {
+                return res.status(400).json({ error: 'Нельзя удалить последний текстовый канал' });
+            }
+        } else if (t === 'voice') {
+            const n = await channelDB.countByServerAndType(serverId, 'voice');
+            if (n <= 1) {
+                return res.status(400).json({ error: 'Нельзя удалить последний голосовой канал' });
+            }
+        } else {
+            return res.status(400).json({ error: 'Неизвестный тип канала' });
+        }
+
+        await channelDB.deleteCascade(channelId);
+        if (t === 'voice') {
+            evictVoiceRoomForDeletedChannel(serverId, channelId);
+        }
+        const tree = await getChannelTree(serverId);
+        io.to(`server-${serverId}`).emit('server-channels-updated', {
+            serverId,
+            tree,
+            deletedChannelId: channelId
+        });
+        res.json({ ok: true, tree });
+    } catch (error) {
+        console.error('DELETE channel:', error);
+        res.status(500).json({ error: 'Не удалось удалить канал' });
+    }
+});
+
 app.get('/api/friends', authenticateToken, async (req, res) => {
     try {
         const friends = await friendDB.getFriends(req.user.id);
@@ -1085,6 +1438,59 @@ app.delete('/api/friends/:friendId', authenticateToken, async (req, res) => {
 // Store connected users
 const users = new Map();
 const rooms = new Map();
+/** socketId → голосовое состояние в комнате */
+const voiceUserState = new Map();
+
+function buildVoiceParticipants(roomKey) {
+    const set = rooms.get(roomKey);
+    if (!set) return [];
+    return Array.from(set)
+        .map((sid) => {
+            const u = users.get(sid);
+            if (!u) return null;
+            const st = voiceUserState.get(sid) || { micMuted: false, deafened: false };
+            return {
+                socketId: sid,
+                userId: u.id,
+                username: u.username,
+                avatar: u.avatar,
+                micMuted: !!st.micMuted,
+                deafened: !!st.deafened
+            };
+        })
+        .filter(Boolean);
+}
+
+function emitVoiceRoster(roomKey, alsoNotifySocket = null) {
+    const participants = buildVoiceParticipants(roomKey);
+    const payload = { roomKey, participants };
+    io.to(`voice-${roomKey}`).emit('voice-roster', payload);
+    if (alsoNotifySocket) {
+        alsoNotifySocket.emit('voice-roster', payload);
+    }
+}
+
+/** После удаления голосового канала — снять сокеты с комнаты и уведомить клиентов */
+function evictVoiceRoomForDeletedChannel(serverId, channelId) {
+    const roomKey = `${serverId}:${channelId}`;
+    if (rooms.has(roomKey)) {
+        const set = rooms.get(roomKey);
+        Array.from(set).forEach((sid) => {
+            voiceUserState.delete(sid);
+            const s = io.sockets.sockets.get(sid);
+            if (s) {
+                try {
+                    s.leave(`voice-${roomKey}`);
+                } catch (_) {}
+                if (s.voiceRoomKey === roomKey) {
+                    delete s.voiceRoomKey;
+                }
+            }
+        });
+        rooms.delete(roomKey);
+    }
+    io.to(`server-${serverId}`).emit('voice-channel-removed', { serverId, channelId });
+}
 
 function emitToUserSockets(userId, event, payload) {
     for (const u of users.values()) {
@@ -1201,7 +1607,8 @@ io.on('connection', async (socket) => {
                 author: sender.username,
                 avatar: sender.avatar || sender.username.charAt(0).toUpperCase(),
                 text,
-                timestamp: new Date()
+                timestamp: new Date(),
+                read: 0
             };
 
             const receiverSocket = Array.from(users.values()).find((u) => u.id === receiverId);
@@ -1301,9 +1708,11 @@ io.on('connection', async (socket) => {
 
     // Voice activity detection
     socket.on('voice-activity', (data) => {
-        socket.broadcast.emit('user-speaking', {
-            userId: socket.userId,
-            speaking: data.speaking
+        const rk = socket.voiceRoomKey;
+        if (!rk) return;
+        socket.to(`voice-${rk}`).emit('user-speaking', {
+            socketId: socket.id,
+            speaking: !!(data && data.speaking)
         });
     });
 
@@ -1319,16 +1728,39 @@ io.on('connection', async (socket) => {
             if (!ch || ch.server_id !== serverId || ch.type !== 'voice') return;
 
             const roomKey = `${serverId}:${channelId}`;
+            const prevKey = socket.voiceRoomKey;
+            if (prevKey && prevKey !== roomKey) {
+                if (rooms.has(prevKey)) {
+                    rooms.get(prevKey).delete(socket.id);
+                    voiceUserState.delete(socket.id);
+                    socket.to(`voice-${prevKey}`).emit('user-left-voice', socket.id);
+                    emitVoiceRoster(prevKey, socket);
+                    const prevSet = rooms.get(prevKey);
+                    if (prevSet && prevSet.size === 0) {
+                        rooms.delete(prevKey);
+                    }
+                }
+                socket.leave(`voice-${prevKey}`);
+                delete socket.voiceRoomKey;
+            }
+
             socket.join(`voice-${roomKey}`);
+            socket.voiceRoomKey = roomKey;
 
             if (!rooms.has(roomKey)) {
                 rooms.set(roomKey, new Set());
             }
             rooms.get(roomKey).add(socket.id);
+            if (!voiceUserState.has(socket.id)) {
+                voiceUserState.set(socket.id, { micMuted: false, deafened: false });
+            }
 
+            const me = users.get(socket.id);
             socket.to(`voice-${roomKey}`).emit('user-joined-voice', {
                 userId,
-                socketId: socket.id
+                socketId: socket.id,
+                username: me ? me.username : '',
+                avatar: me ? me.avatar : null
             });
 
             const existingUsers = Array.from(rooms.get(roomKey))
@@ -1337,8 +1769,23 @@ io.on('connection', async (socket) => {
                 .filter(Boolean);
 
             socket.emit('existing-voice-users', existingUsers);
+            emitVoiceRoster(roomKey);
         } catch (e) {
             console.error('join-voice-channel:', e);
+        }
+    });
+
+    socket.on('voice-self-state', (payload) => {
+        try {
+            const rk = payload && typeof payload.roomKey === 'string' ? payload.roomKey.trim() : '';
+            if (!rk || !rooms.has(rk) || !rooms.get(rk).has(socket.id)) return;
+            voiceUserState.set(socket.id, {
+                micMuted: !!payload.micMuted,
+                deafened: !!payload.deafened
+            });
+            emitVoiceRoster(rk);
+        } catch (e) {
+            console.error('voice-self-state:', e);
         }
     });
 
@@ -1367,11 +1814,21 @@ io.on('connection', async (socket) => {
     socket.on('leave-voice-channel', (roomKey) => {
         const key = typeof roomKey === 'string' && roomKey ? roomKey : '';
         if (!key) return;
-        socket.leave(`voice-${key}`);
 
         if (rooms.has(key)) {
             rooms.get(key).delete(socket.id);
+            voiceUserState.delete(socket.id);
             socket.to(`voice-${key}`).emit('user-left-voice', socket.id);
+            emitVoiceRoster(key, socket);
+            const left = rooms.get(key);
+            if (left && left.size === 0) {
+                rooms.delete(key);
+            }
+        }
+
+        socket.leave(`voice-${key}`);
+        if (socket.voiceRoomKey === key) {
+            delete socket.voiceRoomKey;
         }
     });
 
@@ -1381,7 +1838,10 @@ io.on('connection', async (socket) => {
             const type = data && data.type;
             const fromId = socket.userId;
 
-            if (Number.isNaN(to) || to === fromId) return;
+            if (Number.isNaN(to) || to === fromId) {
+                socket.emit('call-rejected', { message: 'Некорректный вызов' });
+                return;
+            }
 
             const allowed = await friendDB.checkFriendship(fromId, to);
             if (!allowed) {
@@ -1390,11 +1850,14 @@ io.on('connection', async (socket) => {
             }
 
             const sender = await userDB.findById(fromId);
-            if (!sender) return;
+            if (!sender) {
+                socket.emit('call-rejected', { message: 'Ошибка сервера' });
+                return;
+            }
 
-            const receiverSocket = Array.from(users.values()).find((u) => u.id === to);
-            if (receiverSocket) {
-                io.to(receiverSocket.socketId).emit('incoming-call', {
+            const receiverEntries = Array.from(users.values()).filter((u) => Number(u.id) === Number(to));
+            if (receiverEntries.length) {
+                const payload = {
                     from: {
                         id: fromId,
                         username: sender.username,
@@ -1402,25 +1865,34 @@ io.on('connection', async (socket) => {
                         avatar: sender.avatar || sender.username.charAt(0).toUpperCase()
                     },
                     type
-                });
+                };
+                receiverEntries.forEach((u) => io.to(u.socketId).emit('incoming-call', payload));
             } else {
                 socket.emit('call-rejected', { message: 'Пользователь не в сети' });
             }
         } catch (e) {
             console.error('initiate-call:', e);
+            socket.emit('call-rejected', { message: 'Не удалось установить вызов' });
         }
     });
 
     socket.on('accept-call', (data) => {
         const { to, from } = data;
         console.log(`Call accepted by ${from.id}, connecting to ${to}`);
-        
+        const accepter = users.get(socket.id);
+        const avatar =
+            accepter?.avatar ||
+            (accepter?.username && accepter.username.charAt(0).toUpperCase()) ||
+            (from?.username && from.username.charAt(0).toUpperCase()) ||
+            '?';
+
         // Notify the caller that call was accepted
         io.to(to).emit('call-accepted', {
             from: {
                 id: from.id,
                 username: from.username,
-                socketId: socket.id
+                socketId: socket.id,
+                avatar
             }
         });
     });
@@ -1432,7 +1904,7 @@ io.on('connection', async (socket) => {
         // Notify the caller that call was rejected
         io.to(to).emit('call-rejected', {
             from: socket.id,
-            message: 'Call was declined'
+            message: 'Абонент отклонил вызов'
         });
     });
     
@@ -1480,8 +1952,10 @@ io.on('connection', async (socket) => {
             
             rooms.forEach((members, roomName) => {
                 if (members.has(socket.id)) {
-                    members.delete(socket.id);
                     io.to(`voice-${roomName}`).emit('user-left-voice', socket.id);
+                    members.delete(socket.id);
+                    voiceUserState.delete(socket.id);
+                    emitVoiceRoster(roomName);
                 }
             });
             

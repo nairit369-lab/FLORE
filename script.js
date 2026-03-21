@@ -33,11 +33,29 @@ let activeVoiceRoomKey = null;
 let currentTextChannelId = null;
 let currentServerRecord = null;
 let lastLoadedMessagesForExport = [];
+/** socketId → { username, avatar } для плиток голоса */
+const florVoicePeerMeta = {};
+/** SVG для списка участников голоса в сайдбаре */
+const FLOR_ROSTER_MIC_ON =
+    '<svg class="flor-voice-roster-svg" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5h-2c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>';
+const FLOR_ROSTER_MIC_OFF =
+    '<svg class="flor-voice-roster-svg" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.92-4.65H5c0 .94.21 1.82.58 2.64L4.27 15H7v2.27L2 19.27v2.46l16-16L3 3l1.27 1z"/></svg>';
+const FLOR_ROSTER_DEAF =
+    '<svg class="flor-voice-roster-svg" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>';
+/** последний ростер голоса для перерисовки после сброса настроек */
+let florLastVoiceRoster = [];
 /** userId → JWK публичного ключа (E2EE) */
 let florUserKeyCache = new Map();
 let micTestStream = null;
 let micTestAnalyser = null;
 let micTestRaf = null;
+let florLocalVoiceActCtx = null;
+let florLocalVoiceActRAF = null;
+let florVoiceActivityLastEmit = false;
+/** Однократный звук «собеседник в эфире» для ЛС (по socketId) */
+const florRemoteJoinSfxDone = new Set();
+let florIncomingRingTimer = null;
+let florOutgoingRingTimer = null;
 
 const SETTINGS_STORAGE_KEY = 'florMessengerSettings';
 const BOOKMARKS_KEY = 'florMessageBookmarks';
@@ -225,7 +243,18 @@ function renderChannelTree(tree) {
             row.className = isVoice ? 'channel voice-channel' : 'channel text-channel';
             row.setAttribute('data-channel-id', String(c.id));
             row.setAttribute('data-channel', c.name);
-            row.innerHTML = `${isVoice ? VOICE_CH_SVG : TEXT_CH_SVG}<span>${escapeHtml(channelDisplayName(c.name))}</span>`;
+            if (isVoice) {
+                const main = document.createElement('div');
+                main.className = 'voice-channel__main';
+                main.innerHTML = `${VOICE_CH_SVG}<span class="voice-channel__title">${escapeHtml(channelDisplayName(c.name))}</span>`;
+                row.appendChild(main);
+                const roster = document.createElement('div');
+                roster.className = 'flor-voice-roster-preview';
+                roster.setAttribute('aria-label', 'Участники в голосе');
+                row.appendChild(roster);
+            } else {
+                row.innerHTML = `${TEXT_CH_SVG}<span>${escapeHtml(channelDisplayName(c.name))}</span>`;
+            }
             wrap.appendChild(row);
         });
         root.appendChild(wrap);
@@ -278,12 +307,361 @@ function florEscapeSelector(s) {
     return typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(s) : String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+function florRenderServerIcon(el, server) {
+    if (!el || !server) return;
+    el.textContent = '';
+    const ic = server.icon;
+    if (florIsAvatarImageUrl(ic)) {
+        const img = document.createElement('img');
+        img.className = 'server-icon-img';
+        img.src = florMediaUrl(ic);
+        img.alt = '';
+        el.appendChild(img);
+    } else {
+        el.textContent =
+            (ic && String(ic).trim()) || (server.name && server.name.charAt(0).toUpperCase()) || '?';
+    }
+}
+
+function florBroadcastVoiceSelfState() {
+    if (!activeVoiceRoomKey || !socket || !socket.connected) return;
+    const micOff = !localStream || !localStream.getAudioTracks().some((t) => t.enabled);
+    socket.emit('voice-self-state', {
+        roomKey: activeVoiceRoomKey,
+        micMuted: micOff,
+        deafened: !!isDeafened
+    });
+}
+
+function florStopLocalVoiceActivityMonitor() {
+    if (florLocalVoiceActRAF) {
+        cancelAnimationFrame(florLocalVoiceActRAF);
+        florLocalVoiceActRAF = null;
+    }
+    if (florLocalVoiceActCtx) {
+        try {
+            florLocalVoiceActCtx.close();
+        } catch (_) {}
+        florLocalVoiceActCtx = null;
+    }
+    florVoiceActivityLastEmit = false;
+    if (socket && socket.connected && activeVoiceRoomKey) {
+        try {
+            socket.emit('voice-activity', { speaking: false });
+        } catch (_) {}
+    }
+    document.getElementById('localParticipantTile')?.classList.remove('flor-speaking');
+}
+
+function florStartLocalVoiceActivityMonitor() {
+    florStopLocalVoiceActivityMonitor();
+    if (!localStream || !inCall) return;
+    const at = localStream.getAudioTracks()[0];
+    if (!at || !at.enabled) return;
+    try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        const ctx = new Ctx();
+        florLocalVoiceActCtx = ctx;
+        const src = ctx.createMediaStreamSource(new MediaStream([at]));
+        const an = ctx.createAnalyser();
+        an.fftSize = 256;
+        an.smoothingTimeConstant = 0.55;
+        src.connect(an);
+        const buf = new Uint8Array(an.frequencyBinCount);
+        let lastUi = false;
+        const tick = () => {
+            if (!florLocalVoiceActCtx) return;
+            const track = localStream.getAudioTracks()[0];
+            if (!track || !track.enabled) {
+                if (lastUi) {
+                    lastUi = false;
+                    document.getElementById('localParticipantTile')?.classList.remove('flor-speaking');
+                    if (activeVoiceRoomKey && socket && socket.connected) {
+                        socket.emit('voice-activity', { speaking: false });
+                        florVoiceActivityLastEmit = false;
+                    }
+                }
+                florLocalVoiceActRAF = requestAnimationFrame(tick);
+                return;
+            }
+            an.getByteFrequencyData(buf);
+            let sum = 0;
+            for (let i = 0; i < buf.length; i++) sum += buf[i];
+            const avg = sum / buf.length;
+            const speaking = avg > 14;
+            if (speaking !== lastUi) {
+                lastUi = speaking;
+                document.getElementById('localParticipantTile')?.classList.toggle('flor-speaking', speaking);
+            }
+            if (activeVoiceRoomKey && socket && socket.connected) {
+                if (speaking !== florVoiceActivityLastEmit) {
+                    florVoiceActivityLastEmit = speaking;
+                    socket.emit('voice-activity', { speaking });
+                }
+            }
+            florLocalVoiceActRAF = requestAnimationFrame(tick);
+        };
+        tick();
+    } catch (e) {
+        florDevLog('voice activity monitor', e);
+    }
+}
+
+function florRestartLocalVoiceActivityMonitor() {
+    florStopLocalVoiceActivityMonitor();
+    florStartLocalVoiceActivityMonitor();
+}
+
+function updateLocalCallParticipantUI() {
+    const vid = document.getElementById('localVideo');
+    const av = document.getElementById('localCallAvatar');
+    if (!vid || !av) return;
+    const hasLiveVideo =
+        isVideoEnabled &&
+        localStream &&
+        localStream.getVideoTracks().some((t) => t.readyState === 'live' && t.enabled);
+    if (hasLiveVideo) {
+        vid.classList.remove('hidden');
+        av.classList.add('hidden');
+        vid.srcObject = localStream;
+    } else {
+        vid.classList.add('hidden');
+        av.classList.remove('hidden');
+        florFillAvatarEl(av, currentUser && currentUser.avatar, currentUser && currentUser.username);
+    }
+}
+
+function renderCallVoiceRoster(participants) {
+    const el = document.getElementById('callRosterList');
+    const metaEl = document.getElementById('callVoiceMeta');
+    if (!el) return;
+    const list = Array.isArray(participants) ? participants : [];
+    if (metaEl) {
+        const n = list.length;
+        metaEl.textContent =
+            n === 0 ? 'Никого в комнате' : `${n} в комнате: ` + list.map((p) => p.username || '?').join(', ');
+    }
+    el.innerHTML = '';
+    list.forEach((p) => {
+        const row = document.createElement('div');
+        row.className = 'call-roster-row';
+        if (p.userId != null) row.setAttribute('data-user-id', String(p.userId));
+
+        const inner = document.createElement('div');
+        inner.className = 'call-roster-row-inner';
+
+        const av = document.createElement('div');
+        av.className = 'call-roster-avatar';
+        florFillAvatarEl(av, p.avatar, p.username);
+        const info = document.createElement('div');
+        info.className = 'call-roster-info';
+        const nm = document.createElement('div');
+        nm.className = 'call-roster-name';
+        nm.textContent = p.username || 'Участник';
+        const badges = document.createElement('div');
+        badges.className = 'call-roster-badges';
+        if (p.micMuted) {
+            const s1 = document.createElement('span');
+            s1.className = 'call-roster-badge call-roster-badge--muted';
+            s1.textContent = 'Мьют';
+            badges.appendChild(s1);
+        }
+        if (p.deafened) {
+            const s2 = document.createElement('span');
+            s2.className = 'call-roster-badge call-roster-badge--deaf';
+            s2.textContent = 'Без звука';
+            badges.appendChild(s2);
+        }
+        if (!p.micMuted && !p.deafened) {
+            const s3 = document.createElement('span');
+            s3.className = 'call-roster-badge call-roster-badge--live';
+            s3.textContent = 'В эфире';
+            badges.appendChild(s3);
+        }
+        info.appendChild(nm);
+        info.appendChild(badges);
+        inner.appendChild(av);
+        inner.appendChild(info);
+
+        const isSelf = currentUser && Number(p.userId) === Number(currentUser.id);
+        if (!isSelf && p.userId != null && Number.isFinite(Number(p.userId))) {
+            const gear = document.createElement('button');
+            gear.type = 'button';
+            gear.className = 'call-roster-prefs-btn icon-btn';
+            gear.setAttribute('aria-expanded', 'false');
+            gear.setAttribute('aria-label', 'Звук у вас');
+            gear.title = 'Громкость и мьют только у вас';
+            gear.innerHTML =
+                '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 15.5A3.5 3.5 0 0 1 8.5 12 3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5 3.5 3.5 0 0 1-3.5 3.5m7.43-2.53c.04-.32.07-.65.07-1s-.03-.68-.07-1l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.06-.73-1.69-.98l-.38-2.65A.488.488 0 0 0 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.63.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.68.07 1l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.06.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.63-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65z"/></svg>';
+
+            const panel = document.createElement('div');
+            panel.className = 'call-roster-prefs-panel hidden';
+            panel.addEventListener('click', (e) => e.stopPropagation());
+
+            const prefs = florGetVoiceParticipantPrefs(p.userId);
+            const volRow = document.createElement('div');
+            volRow.className = 'call-roster-prefs-vol-row';
+            const volLab = document.createElement('label');
+            volLab.className = 'call-roster-prefs-label';
+            const volVal = document.createElement('span');
+            volVal.className = 'call-roster-prefs-vol-val';
+            volVal.textContent = String(prefs.volume);
+            volLab.appendChild(document.createTextNode('Громкость у вас: '));
+            volLab.appendChild(volVal);
+            volLab.appendChild(document.createTextNode('%'));
+            const range = document.createElement('input');
+            range.type = 'range';
+            range.className = 'call-roster-prefs-range';
+            range.min = '0';
+            range.max = '100';
+            range.value = String(prefs.volume);
+            range.addEventListener('input', () => {
+                const v = parseInt(range.value, 10) || 0;
+                volVal.textContent = String(v);
+                florSetVoiceParticipantPref(p.userId, { volume: v });
+                florApplyVoicePrefsForUserId(p.userId);
+            });
+
+            const muteLab = document.createElement('label');
+            muteLab.className = 'call-roster-prefs-mute checkbox-row';
+            const muteCb = document.createElement('input');
+            muteCb.type = 'checkbox';
+            muteCb.checked = prefs.localMute;
+            muteCb.addEventListener('change', () => {
+                florSetVoiceParticipantPref(p.userId, { localMute: muteCb.checked });
+                florApplyVoicePrefsForUserId(p.userId);
+            });
+            muteLab.appendChild(muteCb);
+            muteLab.appendChild(document.createTextNode(' Не слышать у себя'));
+
+            const hint = document.createElement('p');
+            hint.className = 'call-roster-prefs-hint';
+            hint.textContent = 'Только на вашем устройстве, другие не видят.';
+
+            volRow.appendChild(volLab);
+            volRow.appendChild(range);
+            panel.appendChild(volRow);
+            panel.appendChild(muteLab);
+            panel.appendChild(hint);
+
+            gear.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const wasHidden = panel.classList.contains('hidden');
+                if (wasHidden) {
+                    document.querySelectorAll('.call-roster-prefs-panel').forEach((other) => {
+                        if (other !== panel) other.classList.add('hidden');
+                    });
+                    document.querySelectorAll('.call-roster-prefs-btn').forEach((b) => {
+                        if (b !== gear) b.setAttribute('aria-expanded', 'false');
+                    });
+                    panel.classList.remove('hidden');
+                    gear.setAttribute('aria-expanded', 'true');
+                } else {
+                    panel.classList.add('hidden');
+                    gear.setAttribute('aria-expanded', 'false');
+                }
+            });
+
+            inner.appendChild(gear);
+            row.appendChild(inner);
+            row.appendChild(panel);
+        } else {
+            inner.appendChild(document.createElement('div')).className = 'call-roster-prefs-spacer';
+            row.appendChild(inner);
+        }
+
+        el.appendChild(row);
+    });
+}
+
+function renderVoiceChannelSidebarRoster(roomKey, participants) {
+    if (!roomKey || !currentServerId) return;
+    const parts = String(roomKey).split(':');
+    const sid = parseInt(parts[0], 10);
+    const cid = parseInt(parts[1], 10);
+    if (!Number.isFinite(sid) || sid !== Number(currentServerId) || !Number.isFinite(cid)) return;
+
+    const row = document.querySelector(`.voice-channel[data-channel-id="${cid}"]`);
+    if (!row) return;
+
+    row.querySelectorAll('.flor-voice-count').forEach((el) => el.remove());
+
+    let wrap = row.querySelector('.flor-voice-roster-preview');
+    if (!wrap) {
+        wrap = document.createElement('div');
+        wrap.className = 'flor-voice-roster-preview';
+        wrap.setAttribute('aria-label', 'Участники в голосе');
+        row.appendChild(wrap);
+    }
+
+    const list = Array.isArray(participants) ? participants : [];
+    wrap.innerHTML = '';
+
+    if (list.length === 0) {
+        wrap.classList.remove('flor-voice-roster-preview--visible');
+        return;
+    }
+
+    wrap.classList.add('flor-voice-roster-preview--visible');
+
+    list
+        .slice()
+        .sort((a, b) =>
+            String(a.username || '').localeCompare(String(b.username || ''), 'ru', { sensitivity: 'base' })
+        )
+        .forEach((p) => {
+            const line = document.createElement('div');
+            line.className = 'flor-voice-roster-user';
+
+            const av = document.createElement('div');
+            av.className = 'flor-voice-roster-avatar';
+            florFillAvatarEl(av, p.avatar, p.username);
+
+            const name = document.createElement('span');
+            name.className = 'flor-voice-roster-name';
+            name.textContent = p.username || 'Участник';
+
+            const st = document.createElement('span');
+            st.className = 'flor-voice-roster-status';
+            if (p.micMuted) {
+                st.classList.add('flor-voice-roster-status--muted');
+                st.innerHTML = FLOR_ROSTER_MIC_OFF;
+                st.title = 'Микрофон выключен';
+            } else if (p.deafened) {
+                st.classList.add('flor-voice-roster-status--deaf');
+                st.innerHTML = FLOR_ROSTER_DEAF;
+                st.title = 'Режим без звука';
+            } else {
+                st.innerHTML = FLOR_ROSTER_MIC_ON;
+                st.title = 'Микрофон включён';
+            }
+
+            line.appendChild(av);
+            line.appendChild(name);
+            line.appendChild(st);
+            wrap.appendChild(line);
+        });
+}
+
+function closeAllOpenMessageMenus() {
+    document.querySelectorAll('.message-more-menu:not(.hidden)').forEach((m) => m.classList.add('hidden'));
+    document.querySelectorAll('.message-more-btn[aria-expanded="true"]').forEach((b) =>
+        b.setAttribute('aria-expanded', 'false')
+    );
+}
+
+function removeFlorMessageFromUI(messageId, ctx) {
+    const key = florMessageReactionKey(ctx, messageId);
+    const row = document.querySelector(`[data-flor-msg-key="${florEscapeSelector(key)}"]`);
+    if (row) row.remove();
+}
+
 function getMessengerSettings() {
     try {
         const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
         const s = raw ? JSON.parse(raw) : {};
         if (s.desktopNotifications === undefined) s.desktopNotifications = true;
-        if (s.soundInApp === undefined) s.soundInApp = false;
+        if (s.soundInApp === undefined) s.soundInApp = true;
         if (s.compactMessages === undefined) s.compactMessages = false;
         if (s.theme === undefined) s.theme = 'light';
         if (s.fontScale === undefined) s.fontScale = 100;
@@ -303,11 +681,14 @@ function getMessengerSettings() {
         if (s.audioInputDeviceId === undefined) s.audioInputDeviceId = '';
         if (s.audioOutputDeviceId === undefined) s.audioOutputDeviceId = '';
         if (!s.channelPrefs || typeof s.channelPrefs !== 'object') s.channelPrefs = {};
+        if (!s.voiceParticipantPrefs || typeof s.voiceParticipantPrefs !== 'object') {
+            s.voiceParticipantPrefs = {};
+        }
         return s;
     } catch {
         return {
             desktopNotifications: true,
-            soundInApp: false,
+            soundInApp: true,
             compactMessages: false,
             theme: 'light',
             fontScale: 100,
@@ -316,9 +697,77 @@ function getMessengerSettings() {
             dndEnabled: false,
             dndStart: '22:00',
             dndEnd: '08:00',
-            channelPrefs: {}
+            channelPrefs: {},
+            voiceParticipantPrefs: {}
         };
     }
+}
+
+function florGetVoiceParticipantPrefs(userId) {
+    const uid = String(Number(userId));
+    if (!Number.isFinite(Number(uid))) {
+        return { volume: 100, localMute: false };
+    }
+    const all = getMessengerSettings().voiceParticipantPrefs || {};
+    const p = all[uid] || {};
+    let vol = Number(p.volume);
+    if (!Number.isFinite(vol)) vol = 100;
+    vol = Math.min(100, Math.max(0, vol));
+    return { volume: vol, localMute: p.localMute === true };
+}
+
+function florSetVoiceParticipantPref(userId, patch) {
+    const uid = String(Number(userId));
+    if (!Number.isFinite(Number(uid))) return;
+    const s = getMessengerSettings();
+    const all = { ...(s.voiceParticipantPrefs || {}) };
+    const cur = florGetVoiceParticipantPrefs(uid);
+    const next = { ...cur, ...patch };
+    if (next.volume !== undefined) {
+        next.volume = Math.min(100, Math.max(0, Number(next.volume) || 100));
+    }
+    if (next.localMute !== undefined) {
+        next.localMute = !!next.localMute;
+    }
+    all[uid] = next;
+    saveMessengerSettings({ voiceParticipantPrefs: all });
+}
+
+function florApplyRemoteParticipantAudio(remoteSocketId) {
+    const vid = document.getElementById(`remote-${remoteSocketId}`);
+    if (!vid) return;
+    const meta = florVoicePeerMeta[remoteSocketId] || {};
+    const uid = meta.userId != null ? Number(meta.userId) : null;
+    if (uid == null || !Number.isFinite(uid)) {
+        vid.volume = isDeafened ? 0 : 1;
+        return;
+    }
+    const prefs = florGetVoiceParticipantPrefs(uid);
+    let vol = (prefs.volume / 100) * (isDeafened ? 0 : 1);
+    if (prefs.localMute) vol = 0;
+    vid.volume = Math.min(1, Math.max(0, vol));
+}
+
+function florApplyVoicePrefsForUserId(userId) {
+    const uid = Number(userId);
+    if (!Number.isFinite(uid)) return;
+    Object.keys(florVoicePeerMeta).forEach((socketId) => {
+        if (Number(florVoicePeerMeta[socketId]?.userId) === uid) {
+            florApplyRemoteParticipantAudio(socketId);
+        }
+    });
+}
+
+function florRefreshAllRemoteVoiceVolumes() {
+    document.querySelectorAll('video[id^="remote-"]').forEach((video) => {
+        const m = /^remote-(.+)$/.exec(video.id || '');
+        if (m) florApplyRemoteParticipantAudio(m[1]);
+    });
+}
+
+function closeAllOpenRosterPrefPanels() {
+    document.querySelectorAll('.call-roster-prefs-panel').forEach((p) => p.classList.add('hidden'));
+    document.querySelectorAll('.call-roster-prefs-btn').forEach((b) => b.setAttribute('aria-expanded', 'false'));
 }
 
 function minutesSinceMidnight(d) {
@@ -512,6 +961,136 @@ function linkifyToFragment(text) {
     return frag;
 }
 
+const FLOR_FILE_MESSAGE_RE = /^Файл:\s*(.+?)\s*[\u2014\u2013\-]\s*(\/uploads\/\S+)$/;
+const FLOR_VOICE_MESSAGE_RE = /^Голосовое:\s*[\u2014\u2013\-]\s*(\/uploads\/\S+)$/;
+
+function florMessageIsAttachmentOnlyText(text) {
+    const lines = String(text || '')
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+    if (lines.length === 0) return false;
+    return lines.every(
+        (l) => FLOR_FILE_MESSAGE_RE.test(l) || FLOR_VOICE_MESSAGE_RE.test(l)
+    );
+}
+
+function florAttachmentExt(displayName, path) {
+    const pick = displayName && String(displayName).includes('.') ? displayName : path;
+    const base = String(pick || '');
+    const i = base.lastIndexOf('.');
+    return i >= 0 ? base.slice(i + 1).toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+}
+
+function florAppendLinkifiedLine(frag, line) {
+    const inner = linkifyToFragment(line);
+    while (inner.firstChild) frag.appendChild(inner.firstChild);
+}
+
+function florAppendAttachmentBlock(frag, displayName, path) {
+    const url = florMediaUrl(path);
+    const ext = florAttachmentExt(displayName, path);
+    const imageExt =
+        /^(jpe?g|png|gif|webp|avif|svg|bmp|ico)$/i.test(ext);
+    const videoExt = /^(mp4|webm|mov|m4v|ogv)$/i.test(ext);
+    const openNew = getMessengerSettings().linksOpenNewTab !== false;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'message-attachment';
+
+    if (imageExt) {
+        wrap.classList.add('message-attachment--image');
+        const link = document.createElement('a');
+        link.className = 'message-attachment-img-link';
+        link.href = url;
+        link.setAttribute('aria-label', 'Открыть изображение');
+        if (openNew) {
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+        }
+        const img = document.createElement('img');
+        img.className = 'message-attachment-img';
+        img.src = url;
+        img.alt = '';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        link.appendChild(img);
+        wrap.appendChild(link);
+        frag.appendChild(wrap);
+        return;
+    }
+
+    if (videoExt) {
+        wrap.classList.add('message-attachment--video');
+        const v = document.createElement('video');
+        v.className = 'message-attachment-video';
+        v.src = url;
+        v.controls = true;
+        v.preload = 'metadata';
+        v.playsInline = true;
+        wrap.appendChild(v);
+        frag.appendChild(wrap);
+        return;
+    }
+
+    wrap.classList.add('message-attachment--file');
+    const a = document.createElement('a');
+    a.className = 'message-attachment-link message-attachment-link--file';
+    a.href = url;
+    a.textContent = `📎 ${displayName || 'Файл'}`;
+    if (openNew) {
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+    }
+    wrap.appendChild(a);
+    frag.appendChild(wrap);
+}
+
+function florAppendVoiceMessageBlock(frag, uploadPath) {
+    const url = florMediaUrl(uploadPath);
+    const wrap = document.createElement('div');
+    wrap.className = 'message-attachment message-attachment--voice';
+
+    const label = document.createElement('div');
+    label.className = 'message-attachment-voice-label';
+    label.innerHTML =
+        '<span class="message-attachment-voice-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24"><path fill="currentColor" d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5h-2c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg></span><span>Голосовое</span>';
+
+    const audio = document.createElement('audio');
+    audio.className = 'message-attachment-audio';
+    audio.controls = true;
+    audio.preload = 'metadata';
+    audio.src = url;
+    audio.setAttribute('aria-label', 'Воспроизвести голосовое сообщение');
+
+    wrap.appendChild(label);
+    wrap.appendChild(audio);
+    frag.appendChild(wrap);
+}
+
+function florMessageTextToFragment(text) {
+    const frag = document.createDocumentFragment();
+    if (text == null || text === '') return frag;
+    const lines = String(text).split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+        if (i > 0) frag.appendChild(document.createElement('br'));
+        const line = lines[i];
+        const trimmed = line.trim();
+        const vm = trimmed ? FLOR_VOICE_MESSAGE_RE.exec(trimmed) : null;
+        if (vm) {
+            florAppendVoiceMessageBlock(frag, vm[1].trim());
+            continue;
+        }
+        const m = trimmed ? FLOR_FILE_MESSAGE_RE.exec(trimmed) : null;
+        if (m) {
+            florAppendAttachmentBlock(frag, m[1].trim(), m[2].trim());
+        } else {
+            florAppendLinkifiedLine(frag, line);
+        }
+    }
+    return frag;
+}
+
 function getEffectiveTheme() {
     return getMessengerSettings().theme === 'dark' ? 'dark' : 'light';
 }
@@ -530,22 +1109,24 @@ function applyTheme(theme) {
 }
 
 function syncThemeToggleButton(theme) {
-    const btn = document.getElementById('themeToggleBtn');
-    if (!btn) return;
     const isDark = theme === 'dark';
-    btn.title = isDark ? 'Светлая тема' : 'Тёмная тема';
-    btn.setAttribute('aria-label', btn.title);
-    btn.setAttribute('aria-pressed', isDark ? 'true' : 'false');
-    btn.innerHTML = isDark ? THEME_SUN_SVG : THEME_MOON_SVG;
+    const title = isDark ? 'Светлая тема' : 'Тёмная тема';
+    document.querySelectorAll('[data-flor-theme-toggle]').forEach((btn) => {
+        btn.title = title;
+        btn.setAttribute('aria-label', title);
+        btn.setAttribute('aria-pressed', isDark ? 'true' : 'false');
+        btn.innerHTML = isDark ? THEME_SUN_SVG : THEME_MOON_SVG;
+    });
 }
 
 function initializeThemeToggle() {
-    const btn = document.getElementById('themeToggleBtn');
-    if (!btn) return;
-    btn.addEventListener('click', () => {
+    const toggle = () => {
         const next = getEffectiveTheme() === 'dark' ? 'light' : 'dark';
         saveMessengerSettings({ theme: next });
         applyTheme(next);
+    };
+    document.querySelectorAll('[data-flor-theme-toggle]').forEach((btn) => {
+        btn.addEventListener('click', toggle);
     });
 }
 
@@ -655,31 +1236,228 @@ function florInitMediaPlaybackUnlock() {
     document.addEventListener('keydown', unlock, { capture: true });
 }
 
-function playSoftPing() {
+function florUseRelaxedMediaConstraints() {
     try {
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        if (Ctx && window.isSecureContext) {
-            if (!florAudioCtx) florAudioCtx = new Ctx();
-            const ctx = florAudioCtx;
-            if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-            const o = ctx.createOscillator();
-            const g = ctx.createGain();
-            o.connect(g);
-            g.connect(ctx.destination);
-            o.frequency.value = 880;
-            g.gain.setValueAtTime(0.06, ctx.currentTime);
-            g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
-            o.start(ctx.currentTime);
-            o.stop(ctx.currentTime + 0.14);
+        if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) return true;
+    } catch (_) {}
+    try {
+        return /Android|webOS|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+    } catch (_) {
+        return false;
+    }
+}
+
+function florVideoCaptureConstraints() {
+    if (florUseRelaxedMediaConstraints()) {
+        return {
+            facingMode: 'user',
+            width: { ideal: 640, max: 1280 },
+            height: { ideal: 480, max: 720 }
+        };
+    }
+    return { width: { ideal: 1280 }, height: { ideal: 720 } };
+}
+
+function florAudioCaptureConstraints() {
+    const s = getMessengerSettings();
+    const audio = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+    };
+    if (!florUseRelaxedMediaConstraints()) {
+        audio.sampleRate = 48000;
+        audio.sampleSize = 16;
+        audio.channelCount = 1;
+    }
+    const id = s.audioInputDeviceId && String(s.audioInputDeviceId).trim();
+    if (id) {
+        audio.deviceId = florUseRelaxedMediaConstraints() ? { ideal: id } : { exact: id };
+    }
+    return audio;
+}
+
+async function florGetUserMediaReliable(constraints) {
+    const needVideo = !!(constraints && constraints.video);
+    const needAudio = !!(constraints && constraints.audio);
+    try {
+        return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (e1) {
+        if (
+            e1 &&
+            e1.name === 'OverconstrainedError' &&
+            constraints &&
+            constraints.audio &&
+            typeof constraints.audio === 'object'
+        ) {
+            const looseAudio = { ...constraints.audio };
+            delete looseAudio.deviceId;
+            delete looseAudio.sampleRate;
+            delete looseAudio.sampleSize;
+            delete looseAudio.channelCount;
+            try {
+                return await navigator.mediaDevices.getUserMedia({
+                    audio: looseAudio,
+                    video: constraints.video === false ? false : constraints.video
+                });
+            } catch (_) {
+                /* continue */
+            }
+        }
+        if (needVideo && constraints.video !== false) {
+            try {
+                const v = florUseRelaxedMediaConstraints()
+                    ? { facingMode: 'user' }
+                    : true;
+                return await navigator.mediaDevices.getUserMedia({
+                    audio: needAudio ? true : false,
+                    video: v
+                });
+            } catch (e3) {
+                if (needAudio && needVideo) {
+                    return await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                }
+                throw e3;
+            }
+        }
+        throw e1;
+    }
+}
+
+function florCallSfxAllowed() {
+    return getMessengerSettings().soundInApp === true && !isDoNotDisturbNow();
+}
+
+function florEnsureFlorAudioCtx() {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx || !window.isSecureContext) return null;
+    if (!florAudioCtx) florAudioCtx = new Ctx();
+    if (florAudioCtx.state === 'suspended') florAudioCtx.resume().catch(() => {});
+    return florAudioCtx;
+}
+
+/** join | leave | notify — звуки звонка/комнаты; громкость умеренная */
+function florPlayCallSfx(kind) {
+    if (!florCallSfxAllowed()) return;
+    try {
+        const ctx = florEnsureFlorAudioCtx();
+        if (!ctx) {
+            if (kind === 'notify' && florPingAudio) {
+                florPingAudio.currentTime = 0;
+                florPingAudio.play().catch(() => {});
+            }
             return;
         }
-    } catch (_) {}
-    try {
-        if (florPingAudio) {
-            florPingAudio.currentTime = 0;
-            florPingAudio.play().catch(() => {});
+        const t0 = ctx.currentTime;
+        const master = ctx.createGain();
+        master.connect(ctx.destination);
+        master.gain.value = kind === 'notify' ? 0.07 : 0.09;
+
+        const tone = (freq, t, dur, vol) => {
+            const o = ctx.createOscillator();
+            o.type = 'sine';
+            o.frequency.value = freq;
+            const g = ctx.createGain();
+            o.connect(g);
+            g.connect(master);
+            g.gain.setValueAtTime(0, t);
+            g.gain.linearRampToValueAtTime(vol, t + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+            o.start(t);
+            o.stop(t + dur + 0.02);
+        };
+
+        if (kind === 'join') {
+            tone(523.25, t0, 0.09, 0.45);
+            tone(659.25, t0 + 0.1, 0.11, 0.5);
+        } else if (kind === 'leave') {
+            tone(659.25, t0, 0.08, 0.42);
+            tone(392.0, t0 + 0.1, 0.14, 0.45);
+        } else if (kind === 'notify') {
+            tone(880, t0, 0.08, 0.55);
+            tone(1174.66, t0 + 0.07, 0.06, 0.35);
         }
-    } catch (_) {}
+    } catch (_) {
+        try {
+            if (kind === 'notify' && florPingAudio) {
+                florPingAudio.currentTime = 0;
+                florPingAudio.play().catch(() => {});
+            }
+        } catch (_) {}
+    }
+}
+
+function florPlayRingBurst(incoming) {
+    if (!florCallSfxAllowed()) return;
+    const ctx = florEnsureFlorAudioCtx();
+    if (!ctx) return;
+    const t0 = ctx.currentTime;
+    const master = ctx.createGain();
+    master.connect(ctx.destination);
+    master.gain.value = incoming ? 0.1 : 0.06;
+    const pulse = (base, t) => {
+        for (let i = 0; i < 2; i++) {
+            const o = ctx.createOscillator();
+            o.type = 'sine';
+            o.frequency.value = base + i * 45;
+            const g = ctx.createGain();
+            o.connect(g);
+            g.connect(master);
+            const st = t + i * 0.22;
+            g.gain.setValueAtTime(0, st);
+            g.gain.linearRampToValueAtTime(0.5, st + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.001, st + 0.38);
+            o.start(st);
+            o.stop(st + 0.42);
+        }
+    };
+    pulse(incoming ? 425 : 340, t0);
+    if (incoming) pulse(480, t0 + 0.55);
+}
+
+function florStopIncomingRingtone() {
+    if (florIncomingRingTimer) {
+        clearInterval(florIncomingRingTimer);
+        florIncomingRingTimer = null;
+    }
+}
+
+function florStartIncomingRingtone() {
+    florStopIncomingRingtone();
+    florPlayRingBurst(true);
+    florIncomingRingTimer = setInterval(() => florPlayRingBurst(true), 2800);
+}
+
+function florStopOutgoingRingtone() {
+    if (florOutgoingRingTimer) {
+        clearInterval(florOutgoingRingTimer);
+        florOutgoingRingTimer = null;
+    }
+}
+
+function florStartOutgoingRingtone() {
+    florStopOutgoingRingtone();
+    florPlayRingBurst(false);
+    florOutgoingRingTimer = setInterval(() => florPlayRingBurst(false), 2600);
+}
+
+function florResetCallRingAndJoinSfx() {
+    florStopIncomingRingtone();
+    florStopOutgoingRingtone();
+    florRemoteJoinSfxDone.clear();
+}
+
+/** Горизонтальная сетка только для видеозвонка ЛС (не голосовой канал сервера) */
+function florSyncDmVideoCallLayout() {
+    const el = document.getElementById('callInterface');
+    if (!el) return;
+    const d = window.currentCallDetails;
+    const dmVideo = !!(d && d.type === 'video' && !activeVoiceRoomKey);
+    el.classList.toggle('flor-call-shell--dm-video', dmVideo);
+}
+
+function playSoftPing() {
+    florPlayCallSfx('notify');
 }
 
 function applyCompactMessages() {
@@ -730,6 +1508,10 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function initializeApp() {
+    document.addEventListener('click', () => {
+        closeAllOpenMessageMenus();
+        closeAllOpenRosterPrefPanels();
+    });
     florInitMediaPlaybackUnlock();
     initializeFlorSplash();
     initializeFlorUserProfileOverlay();
@@ -746,8 +1528,10 @@ function initializeApp() {
     initializeChannelSettingsPanel();
     initializeServerSettingsSave();
     initializeServerCreateChannel();
+    initializeServerDeleteChannel();
     initializeMembersPanel();
     initializeChatTools();
+    initializeNotificationButtons();
     initializeHotkeys();
     initializeCallControls();
     initializeServerManagement();
@@ -755,12 +1539,21 @@ function initializeApp() {
     initializeMobileTabbar();
     initializeMobileSwipeNav();
     initializeFileUpload();
+    initializeVoiceMessageButton();
     initializeEmojiPicker();
     initializeDraggableCallWindow();
     connectToSocketIO();
     requestNotificationPermission();
     loadUserServers();
     showFriendsView();
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible') return;
+        if (currentView === 'dm' && currentDMUserId != null) {
+            void florMarkDmConversationRead(currentDMUserId);
+        }
+    });
+
     (async () => {
         try {
             await florRefreshUserKeyCache();
@@ -870,7 +1663,8 @@ async function openFlorUserProfile(userId) {
         const banner = document.createElement('div');
         banner.className = 'flor-profile-card__banner';
         if (data.profile_banner) {
-            banner.style.backgroundImage = `url(${JSON.stringify(florMediaUrl(data.profile_banner))})`;
+            const bu = florMediaUrl(data.profile_banner);
+            banner.style.backgroundImage = `url("${bu.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}")`;
         }
         const body = document.createElement('div');
         body.className = 'flor-profile-card__body';
@@ -991,11 +1785,61 @@ function connectToSocketIO() {
             florDevLog('Connected to server');
         });
 
-        socket.on('server-membership-update', () => {
+        socket.on('server-membership-update', (payload) => {
+            if (payload?.removed && payload.serverId != null) {
+                if (currentServerId != null && Number(currentServerId) === Number(payload.serverId)) {
+                    currentServerRecord = null;
+                    showFriendsView();
+                }
+                servers = servers.filter((s) => Number(s.id) !== Number(payload.serverId));
+            }
             if (socket && socket.connected) {
                 socket.emit('resync-server-rooms');
             }
             loadUserServers();
+        });
+
+        socket.on('server-channels-updated', (payload) => {
+            if (!payload || Number(payload.serverId) !== Number(currentServerId)) return;
+            if (payload.tree) {
+                renderChannelTree(payload.tree);
+                flattenChannelTreeToMaps(payload.tree);
+            }
+            if (
+                payload.deletedChannelId != null &&
+                Number(payload.deletedChannelId) === Number(currentTextChannelId)
+            ) {
+                const keys = Object.keys(currentServerChannelMap || {});
+                if (keys.length) {
+                    switchChannel(keys[0]);
+                } else {
+                    const box = document.getElementById('messagesContainer');
+                    if (box) {
+                        box.innerHTML =
+                            '<p class="empty-channel-hint" style="padding:16px;color:var(--flor-muted);">Канал удалён. Выберите другой канал в списке слева.</p>';
+                    }
+                    currentChannel = '';
+                    currentTextChannelId = null;
+                }
+            }
+            const ov = document.getElementById('serverSettingsOverlay');
+            if (
+                ov &&
+                !ov.classList.contains('hidden') &&
+                currentUser &&
+                currentServerRecord &&
+                Number(currentServerRecord.owner_id) === Number(currentUser.id)
+            ) {
+                void populateServerSettingsDeleteChannels();
+            }
+        });
+
+        socket.on('voice-channel-removed', (data) => {
+            if (!data || data.serverId == null || data.channelId == null) return;
+            const rk = `${data.serverId}:${data.channelId}`;
+            if (activeVoiceRoomKey === rk) {
+                leaveVoiceChannel(true);
+            }
         });
         
        socket.on('connect_error', (error) => {
@@ -1069,58 +1913,156 @@ function connectToSocketIO() {
         // WebRTC Signaling
         socket.on('user-joined-voice', (data) => {
             florDevLog('User joined voice:', data);
+            if (!data || !data.socketId) return;
+            if (
+                inCall &&
+                socket &&
+                data.socketId !== socket.id &&
+                activeVoiceRoomKey
+            ) {
+                florPlayCallSfx('join');
+            }
+            if (peerConnections[data.socketId]) {
+                try {
+                    peerConnections[data.socketId].close();
+                } catch (_) {}
+                delete peerConnections[data.socketId];
+            }
+            florVoicePeerMeta[data.socketId] = {
+                userId: data.userId,
+                username: data.username || '',
+                avatar: data.avatar || ''
+            };
             createPeerConnection(data.socketId, true);
         });
 
-        socket.on('existing-voice-users', (users) => {
-            users.forEach(user => {
+        socket.on('existing-voice-users', (userList) => {
+            userList.forEach((user) => {
+                if (!user || !user.socketId) return;
+                if (peerConnections[user.socketId]) {
+                    try {
+                        peerConnections[user.socketId].close();
+                    } catch (_) {}
+                    delete peerConnections[user.socketId];
+                }
+                florVoicePeerMeta[user.socketId] = {
+                    userId: user.id,
+                    username: user.username || '',
+                    avatar: user.avatar || ''
+                };
                 createPeerConnection(user.socketId, false);
             });
         });
 
+        socket.on('voice-roster', (data) => {
+            if (!data || !data.roomKey) return;
+            florLastVoiceRoster = Array.isArray(data.participants) ? data.participants : [];
+            renderVoiceChannelSidebarRoster(data.roomKey, data.participants);
+            if (activeVoiceRoomKey === data.roomKey) {
+                renderCallVoiceRoster(data.participants);
+            }
+        });
+
         socket.on('user-left-voice', (socketId) => {
+            if (inCall && socketId !== socket?.id) {
+                florPlayCallSfx('leave');
+            }
+            delete florVoicePeerMeta[socketId];
             if (peerConnections[socketId]) {
                 peerConnections[socketId].close();
                 delete peerConnections[socketId];
             }
-            const remoteVideo = document.getElementById(`remote-${socketId}`);
-            if (remoteVideo) remoteVideo.remove();
+            const part = document.getElementById(`participant-${socketId}`);
+            if (part) part.remove();
+        });
+
+        socket.on('user-speaking', (data) => {
+            if (!data || !data.socketId) return;
+            const el = document.getElementById(`participant-${data.socketId}`);
+            el?.classList.toggle('flor-speaking', !!data.speaking);
+        });
+
+        socket.on('message-deleted', (data) => {
+            if (!data || data.channelId == null || data.messageId == null) return;
+            if (
+                currentView !== 'server' ||
+                currentTextChannelId == null ||
+                Number(data.channelId) !== Number(currentTextChannelId)
+            ) {
+                return;
+            }
+            removeFlorMessageFromUI(data.messageId, 'channel');
+        });
+
+        socket.on('dm-message-deleted', (data) => {
+            if (!data || data.messageId == null) return;
+            if (currentView !== 'dm') return;
+            removeFlorMessageFromUI(data.messageId, 'dm');
         });
 
         socket.on('offer', async (data) => {
-            if (!peerConnections[data.from]) {
-                createPeerConnection(data.from, false);
+            try {
+                let pc = peerConnections[data.from];
+                if (
+                    pc &&
+                    (pc.signalingState === 'closed' ||
+                        pc.connectionState === 'closed' ||
+                        pc.iceConnectionState === 'closed' ||
+                        pc.iceConnectionState === 'failed')
+                ) {
+                    try {
+                        pc.close();
+                    } catch (_) {}
+                    delete peerConnections[data.from];
+                    pc = null;
+                }
+                if (!peerConnections[data.from]) {
+                    createPeerConnection(data.from, false);
+                }
+                pc = peerConnections[data.from];
+                if (!pc) return;
+                await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                socket.emit('answer', { to: data.from, answer: answer });
+            } catch (e) {
+                console.error('WebRTC offer:', e);
             }
-            const pc = peerConnections[data.from];
-            await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            socket.emit('answer', { to: data.from, answer: answer });
         });
 
         socket.on('answer', async (data) => {
-            const pc = peerConnections[data.from];
-            if (pc) {
-                await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+            try {
+                const pc = peerConnections[data.from];
+                if (pc) {
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                }
+            } catch (e) {
+                console.error('WebRTC answer:', e);
             }
         });
 
         socket.on('ice-candidate', async (data) => {
-            const pc = peerConnections[data.from];
-            if (pc && data.candidate) {
-                await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+            try {
+                const pc = peerConnections[data.from];
+                if (pc && data.candidate) {
+                    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
+            } catch (e) {
+                florDevLog('ICE candidate:', e);
             }
         });
         
         socket.on('video-toggle', (data) => {
-            // Update UI when peer toggles video
             const participantDiv = document.getElementById(`participant-${data.from}`);
-            if (participantDiv) {
-                if (data.enabled) {
-                    participantDiv.style.opacity = '1';
-                } else {
-                    participantDiv.style.opacity = '0.7';
-                }
+            if (!participantDiv) return;
+            const vid = participantDiv.querySelector('.flor-call-tile-video');
+            const av = participantDiv.querySelector('.flor-call-tile-avatar');
+            if (data.enabled) {
+                if (vid) vid.classList.remove('hidden');
+                if (av) av.classList.add('hidden');
+            } else {
+                if (vid) vid.classList.add('hidden');
+                if (av) av.classList.remove('hidden');
             }
         });
         socket.on('new-dm', async (data) => {
@@ -1136,9 +2078,13 @@ function connectToSocketIO() {
                     author: data.message.author,
                     avatar: data.message.avatar,
                     text: t,
-                    timestamp: data.message.timestamp
+                    timestamp: data.message.timestamp,
+                    read: data.message.read
                 });
                 scrollToBottom();
+                if (document.visibilityState === 'visible') {
+                    void florMarkDmConversationRead(data.senderId);
+                }
                 if (
                     getMessengerSettings().soundInApp === true &&
                     document.visibilityState === 'visible' &&
@@ -1162,15 +2108,19 @@ function connectToSocketIO() {
                     author: currentUser.username,
                     avatar: currentUser.avatar,
                     text: t,
-                    timestamp: data.message.timestamp
+                    timestamp: data.message.timestamp,
+                    read: data.message.read
                 });
                 scrollToBottom();
             }
         });
 
         socket.on('new-friend-request', () => {
-            loadPendingRequests();
+            void loadPendingRequests();
             showNotification('Заявка в друзья', 'Вам пришла новая заявка в друзья.');
+            if (document.visibilityState === 'visible') {
+                florPlayCallSfx('notify');
+            }
         });
 
         socket.on('incoming-call', (data) => {
@@ -1182,9 +2132,20 @@ function connectToSocketIO() {
 
         socket.on('call-accepted', (data) => {
             florDevLog('Call accepted by:', data.from);
+            florStopOutgoingRingtone();
+            if (window.currentCallDetails && window.currentCallDetails.isInitiator) {
+                florPlayCallSfx('join');
+            }
             // When call is accepted, create peer connection
             document.querySelector('.call-channel-name').textContent = `Связь с ${data.from.username}`;
-            
+            if (data.from?.socketId) {
+                florVoicePeerMeta[data.from.socketId] = {
+                    userId: data.from.id,
+                    username: data.from.username,
+                    avatar: data.from.avatar
+                };
+            }
+
             // Create peer connection as initiator
             if (!peerConnections[data.from.socketId]) {
                 createPeerConnection(data.from.socketId, true);
@@ -1192,18 +2153,52 @@ function connectToSocketIO() {
         });
 
         socket.on('call-rejected', (data) => {
-            alert('Звонок отклонён');
-            // Close call interface
+            florStopIncomingRingtone();
+            florStopOutgoingRingtone();
+            alert((data && data.message) || 'Звонок отклонён или недоступен');
+            const wasDirectInitiator = !!(
+                window.currentCallDetails && window.currentCallDetails.isInitiator
+            );
+            const rk = activeVoiceRoomKey;
             const callInterface = document.getElementById('callInterface');
             callInterface.classList.add('hidden');
+            if (wasDirectInitiator) {
+                Object.keys(peerConnections).forEach((id) => {
+                    try {
+                        peerConnections[id].close();
+                    } catch (_) {}
+                    delete peerConnections[id];
+                });
+                if (socket && socket.connected && rk) {
+                    socket.emit('leave-voice-channel', rk);
+                }
+                activeVoiceRoomKey = null;
+                activeVoiceChannelName = null;
+                document.querySelectorAll('.voice-channel').forEach((ch) => ch.classList.remove('in-call'));
+                if (rk && currentServerId) {
+                    const cid = parseInt(String(rk).split(':')[1], 10);
+                    if (Number.isFinite(cid)) {
+                        renderVoiceChannelSidebarRoster(rk, []);
+                    }
+                }
+            }
             if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
+                localStream.getTracks().forEach((track) => track.stop());
                 localStream = null;
             }
             inCall = false;
+            window.currentCallDetails = null;
+            florRemoteJoinSfxDone.clear();
+            florSyncDmVideoCallLayout();
+        });
+
+        socket.on('dm-read-receipt', (data) => {
+            if (!data || !Array.isArray(data.messageIds)) return;
+            florUpdateDmReadReceiptsInUI(data.messageIds);
         });
         
         socket.on('call-ended', (data) => {
+            florStopOutgoingRingtone();
             // Handle when other party ends the call
             if (peerConnections[data.from]) {
                 peerConnections[data.from].close();
@@ -1265,6 +2260,7 @@ async function loadFriends() {
         displayFriends(friends);
         populateDMList(friends);
         await florRefreshUserKeyCache();
+        void florRefreshFriendRequestBadge();
     } catch (error) {
         console.error('Error loading friends:', error);
     }
@@ -1326,7 +2322,7 @@ function createFriendItem(friend) {
     bMsg.className = 'friend-action-btn message';
     bMsg.title = 'Написать';
     bMsg.textContent = '💬';
-    bMsg.addEventListener('click', () => startDM(friend.id, friend.username));
+    bMsg.addEventListener('click', () => startDM(friend.id, friend.username, friend.avatar));
     const bAu = document.createElement('button');
     bAu.type = 'button';
     bAu.className = 'friend-action-btn audio-call';
@@ -1443,13 +2439,73 @@ window.sendFriendRequest = async function(friendId) {
     }
 };
 
+function florSyncPendingRequestsTabDot(n) {
+    const tab = document.querySelector('.friends-tab[data-tab="pending"]');
+    const dot = tab?.querySelector('.friends-tab-pending-dot');
+    if (!tab || !dot) return;
+    const num = Number(n) || 0;
+    if (num > 0) {
+        dot.hidden = false;
+        dot.setAttribute('aria-hidden', 'false');
+        tab.classList.add('friends-tab--has-pending');
+        tab.title = `Входящие заявки: ${num}`;
+    } else {
+        dot.hidden = true;
+        dot.setAttribute('aria-hidden', 'true');
+        tab.classList.remove('friends-tab--has-pending');
+        tab.removeAttribute('title');
+    }
+}
+
+function florSyncNotifBadgeFromCount(n) {
+    const badges = document.querySelectorAll('.flor-notif-badge');
+    const num = Number(n) || 0;
+    const label = num > 99 ? '99+' : String(num);
+    badges.forEach((badge) => {
+        if (num > 0) {
+            badge.hidden = false;
+            badge.setAttribute('aria-hidden', 'false');
+            badge.textContent = label;
+        } else {
+            badge.hidden = true;
+            badge.setAttribute('aria-hidden', 'true');
+            badge.textContent = '';
+        }
+    });
+    florSyncPendingRequestsTabDot(num);
+}
+
+async function florRefreshFriendRequestBadge() {
+    try {
+        const response = await fetch(florApi('/api/friends/pending'), {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        const requests = await response.json();
+        florSyncNotifBadgeFromCount(Array.isArray(requests) ? requests.length : 0);
+    } catch (e) {
+        /* ignore */
+    }
+}
+
+function initializeNotificationButtons() {
+    const openPending = () => {
+        showFriendsView();
+        switchFriendsTab('pending');
+        window.florCloseMobileSidebar?.();
+    };
+    document.getElementById('florDesktopNotifBtn')?.addEventListener('click', openPending);
+    document.getElementById('florMobileNotifBtn')?.addEventListener('click', openPending);
+}
+
 async function loadPendingRequests() {
     try {
         const response = await fetch(florApi('/api/friends/pending'), {
             headers: { 'Authorization': `Bearer ${token}` }
         });
         const requests = await response.json();
-        
+
+        florSyncNotifBadgeFromCount(Array.isArray(requests) ? requests.length : 0);
+
         const pendingList = document.getElementById('friendsPending');
         pendingList.innerHTML = '';
         
@@ -1458,22 +2514,43 @@ async function loadPendingRequests() {
             return;
         }
         
-        requests.forEach(request => {
+        requests.forEach((request) => {
             const div = document.createElement('div');
             div.className = 'friend-item';
-            
-            div.innerHTML = `
-                <div class="friend-avatar">${request.avatar || request.username.charAt(0).toUpperCase()}</div>
-                <div class="friend-info">
-                    <div class="friend-name">${request.username}</div>
-                    <div class="friend-status">Входящая заявка в друзья</div>
-                </div>
-                <div class="friend-actions">
-                    <button class="friend-action-btn accept" onclick="acceptFriendRequest(${request.id})">✓</button>
-                    <button class="friend-action-btn reject" onclick="rejectFriendRequest(${request.id})">✕</button>
-                </div>
-            `;
-            
+
+            const av = document.createElement('div');
+            av.className = 'friend-avatar';
+            florFillAvatarEl(av, request.avatar, request.username);
+
+            const info = document.createElement('div');
+            info.className = 'friend-info';
+            const nameEl = document.createElement('div');
+            nameEl.className = 'friend-name';
+            nameEl.textContent = request.username || '';
+            const st = document.createElement('div');
+            st.className = 'friend-status';
+            st.textContent = 'Входящая заявка в друзья';
+            info.appendChild(nameEl);
+            info.appendChild(st);
+
+            const actions = document.createElement('div');
+            actions.className = 'friend-actions';
+            const acc = document.createElement('button');
+            acc.type = 'button';
+            acc.className = 'friend-action-btn accept';
+            acc.textContent = '✓';
+            acc.addEventListener('click', () => acceptFriendRequest(request.id));
+            const rej = document.createElement('button');
+            rej.type = 'button';
+            rej.className = 'friend-action-btn reject';
+            rej.textContent = '✕';
+            rej.addEventListener('click', () => rejectFriendRequest(request.id));
+            actions.appendChild(acc);
+            actions.appendChild(rej);
+
+            div.appendChild(av);
+            div.appendChild(info);
+            div.appendChild(actions);
             pendingList.appendChild(div);
         });
     } catch (error) {
@@ -1537,21 +2614,48 @@ window.removeFriend = async function(friendId) {
     }
 };
 
+/** ЛС-звонок: не оставлять поток голосовой комнаты и использовать те же настройки микрофона, что и в войсе (с запасным вариантом без deviceId). */
+async function florAcquireMediaForDirectCall(type) {
+    if (activeVoiceRoomKey) {
+        leaveVoiceChannel(true, { silent: true });
+    } else if (localStream) {
+        try {
+            localStream.getTracks().forEach((t) => t.stop());
+        } catch (_) {}
+        localStream = null;
+    }
+
+    const isVideo = type === 'video';
+    try {
+        await initializeMedia({ voice: !isVideo });
+    } catch (e) {
+        console.warn('florAcquireMediaForDirectCall fallback', e);
+        const constraints = isVideo
+            ? { audio: true, video: florVideoCaptureConstraints() }
+            : { audio: true, video: false };
+        localStream = await florGetUserMediaReliable(constraints);
+        const localVideo = document.getElementById('localVideo');
+        if (localVideo) localVideo.srcObject = localStream;
+    }
+
+    if (isVideo && localStream) {
+        localStream.getVideoTracks().forEach((t) => {
+            t.enabled = false;
+        });
+    }
+    if (localStream) {
+        const muted = isMuted || isDeafened;
+        localStream.getAudioTracks().forEach((t) => {
+            t.enabled = !muted;
+        });
+    }
+}
+
 // Initiate call function
 async function initiateCall(friendId, type) {
     try {
-        // Always request both video and audio, but disable video if it's audio call
-        const constraints = { video: true, audio: true };
-        
-        localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        
-        // If audio call, disable video track initially
-        if (type === 'audio') {
-            localStream.getVideoTracks().forEach(track => {
-                track.enabled = false;
-            });
-        }
-        
+        await florAcquireMediaForDirectCall(type);
+
         // Show call interface
         const callInterface = document.getElementById('callInterface');
         callInterface.classList.remove('hidden');
@@ -1559,7 +2663,6 @@ async function initiateCall(friendId, type) {
         // Update call header
         document.querySelector('.call-channel-name').textContent = 'Вызов…';
         
-        // Set local video
         const localVideo = document.getElementById('localVideo');
         localVideo.srcObject = localStream;
         
@@ -1574,7 +2677,7 @@ async function initiateCall(friendId, type) {
         // Emit call request via socket
         if (socket && socket.connected) {
             socket.emit('initiate-call', {
-                to: friendId,
+                to: Number(friendId),
                 type: type,
                 from: {
                     id: currentUser.id,
@@ -1585,20 +2688,20 @@ async function initiateCall(friendId, type) {
         }
         
         inCall = true;
-        isVideoEnabled = type === 'video';
-        isAudioEnabled = true;
+        isVideoEnabled = false;
+        isAudioEnabled = !(isMuted || isDeafened);
+        activeVoiceRoomKey = null;
         updateCallButtons();
-        
-        // Initialize resizable functionality after a short delay
-        setTimeout(() => {
-            if (typeof initializeResizableVideos === 'function') {
-                initializeResizableVideos();
-            }
-        }, 100);
+        updateLocalCallParticipantUI();
+        florStartOutgoingRingtone();
+        florSyncDmVideoCallLayout();
         
     } catch (error) {
         console.error('Error initiating call:', error);
+        florStopOutgoingRingtone();
         alert(florMediaAccessHint());
+        window.currentCallDetails = null;
+        florSyncDmVideoCallLayout();
     }
 }
 
@@ -1609,20 +2712,23 @@ function showIncomingCall(caller, type) {
     const callerAvatar = incomingCallDiv.querySelector('.caller-avatar');
     
     callerName.textContent = caller.username || 'Неизвестный';
-    callerAvatar.textContent = caller.avatar || caller.username?.charAt(0).toUpperCase() || 'U';
+    florFillAvatarEl(callerAvatar, caller.avatar, caller.username || 'U');
     
     incomingCallDiv.classList.remove('hidden');
+    florStartIncomingRingtone();
     
     // Set up accept/reject handlers
     const acceptBtn = document.getElementById('acceptCallBtn');
     const rejectBtn = document.getElementById('rejectCallBtn');
     
     acceptBtn.onclick = async () => {
+        florStopIncomingRingtone();
         incomingCallDiv.classList.add('hidden');
         await acceptCall(caller, type);
     };
     
     rejectBtn.onclick = () => {
+        florStopIncomingRingtone();
         incomingCallDiv.classList.add('hidden');
         rejectCall(caller);
     };
@@ -1630,6 +2736,7 @@ function showIncomingCall(caller, type) {
     // Auto-reject after 30 seconds
     setTimeout(() => {
         if (!incomingCallDiv.classList.contains('hidden')) {
+            florStopIncomingRingtone();
             incomingCallDiv.classList.add('hidden');
             rejectCall(caller);
         }
@@ -1639,18 +2746,9 @@ function showIncomingCall(caller, type) {
 // Accept incoming call
 async function acceptCall(caller, type) {
     try {
-        // Always request both video and audio
-        const constraints = { video: true, audio: true };
-        
-        localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        
-        // If audio call, disable video track initially
-        if (type === 'audio') {
-            localStream.getVideoTracks().forEach(track => {
-                track.enabled = false;
-            });
-        }
-        
+        florStopIncomingRingtone();
+        await florAcquireMediaForDirectCall(type);
+
         // Show call interface
         const callInterface = document.getElementById('callInterface');
         callInterface.classList.remove('hidden');
@@ -1667,7 +2765,12 @@ async function acceptCall(caller, type) {
             isInitiator: false,
             originalType: type
         };
-        
+        florVoicePeerMeta[caller.socketId] = {
+            userId: caller.id,
+            username: caller.username,
+            avatar: caller.avatar
+        };
+
         if (socket && socket.connected) {
             socket.emit('accept-call', {
                 to: caller.socketId,
@@ -1680,36 +2783,35 @@ async function acceptCall(caller, type) {
         }
         
         inCall = true;
-        isVideoEnabled = type === 'video';
-        isAudioEnabled = true;
+        isVideoEnabled = false;
+        isAudioEnabled = !(isMuted || isDeafened);
+        activeVoiceRoomKey = null;
         updateCallButtons();
+        updateLocalCallParticipantUI();
         
         // Create peer connection as receiver (not initiator)
         if (!peerConnections[caller.socketId]) {
             createPeerConnection(caller.socketId, false);
         }
-        
-        // Initialize resizable functionality after a short delay
-        setTimeout(() => {
-            if (typeof initializeResizableVideos === 'function') {
-                initializeResizableVideos();
-            }
-        }, 100);
+        florSyncDmVideoCallLayout();
         
     } catch (error) {
         console.error('Error accepting call:', error);
         alert(florMediaAccessHint());
+        window.currentCallDetails = null;
+        florSyncDmVideoCallLayout();
     }
 }
 
 // Reject incoming call
 function rejectCall(caller) {
+    florStopIncomingRingtone();
     if (socket && socket.connected) {
         socket.emit('reject-call', { to: caller.socketId });
     }
 }
 
-window.startDM = async function(friendId, friendUsername) {
+window.startDM = async function(friendId, friendUsername, friendAvatar) {
     currentView = 'dm';
     currentDMUserId = friendId;
     currentServerId = null;
@@ -1721,10 +2823,15 @@ window.startDM = async function(friendId, friendUsername) {
     document.getElementById('dmListView').style.display = 'block';
 
     const chatHeaderInfo = document.getElementById('chatHeaderInfo');
-    chatHeaderInfo.innerHTML = `
-        <div class="friend-avatar">${friendUsername.charAt(0).toUpperCase()}</div>
-        <span class="channel-name">${friendUsername}</span>
-    `;
+    chatHeaderInfo.textContent = '';
+    const headAv = document.createElement('div');
+    headAv.className = 'friend-avatar';
+    florFillAvatarEl(headAv, friendAvatar, friendUsername);
+    const headName = document.createElement('span');
+    headName.className = 'channel-name';
+    headName.textContent = friendUsername;
+    chatHeaderInfo.appendChild(headAv);
+    chatHeaderInfo.appendChild(headName);
     
     document.getElementById('messageInput').placeholder = `Сообщение для @${friendUsername}`;
     
@@ -1734,10 +2841,6 @@ window.startDM = async function(friendId, friendUsername) {
 
 // Show friends view
 function showFriendsView() {
-    if (activeVoiceRoomKey) {
-        leaveVoiceChannel(true);
-    }
-
     currentView = 'friends';
     currentDMUserId = null;
     currentServerId = null;
@@ -1765,8 +2868,11 @@ function showFriendsView() {
 
 // Show server view
 async function showServerView(server) {
-    if (inCall && currentServerId != null && currentServerId !== server.id) {
-        leaveVoiceChannel(true);
+    if (activeVoiceRoomKey) {
+        const curSid = parseInt(String(activeVoiceRoomKey).split(':')[0], 10);
+        if (Number.isFinite(curSid) && curSid !== Number(server.id)) {
+            leaveVoiceChannel(true);
+        }
     }
     currentView = 'server';
     currentServerId = Number(server.id);
@@ -2046,9 +3152,9 @@ function addServerToUI(server, switchTo = false) {
     
     const serverIcon = document.createElement('div');
     serverIcon.className = 'server-icon';
-    serverIcon.textContent = server.icon;
     serverIcon.title = server.name;
     serverIcon.setAttribute('data-server-id', String(server.id));
+    florRenderServerIcon(serverIcon, server);
     
     serverIcon.addEventListener('click', () => {
         document.querySelectorAll('.server-icon').forEach(icon => icon.classList.remove('active'));
@@ -2199,6 +3305,7 @@ async function loadChannelMessages(channelName) {
 
     scrollToBottom();
     filterChatMessages(document.getElementById('chatMessageSearch')?.value || '');
+    florSyncGlobalChatSearchFromHeader();
 }
 
 function initializeMessageInput() {
@@ -2334,6 +3441,51 @@ function florMessageIsOwn(message) {
     return String(message.author || '') === String(currentUser.username || '');
 }
 
+function florDmReadIsSeen(val) {
+    return val === true || val === 1 || val === '1';
+}
+
+async function florMarkDmConversationRead(partnerId) {
+    if (partnerId == null || !token) return;
+    const pid = Number(partnerId);
+    if (!Number.isFinite(pid)) return;
+    try {
+        await fetch(florApi('/api/dm/read'), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({ partnerId: pid }),
+            credentials: 'same-origin'
+        });
+    } catch (_) {}
+}
+
+function florSyncGlobalChatSearchFromHeader() {
+    const g = document.getElementById('florGlobalSearchInput');
+    const ch = document.getElementById('chatMessageSearch');
+    if (g && ch && window.matchMedia('(min-width: 769px)').matches) {
+        g.value = ch.value;
+    }
+}
+
+function florUpdateDmReadReceiptsInUI(messageIds) {
+    if (!Array.isArray(messageIds)) return;
+    const box = document.getElementById('messagesContainer');
+    if (!box) return;
+    messageIds.forEach((id) => {
+        const row = box.querySelector(`[data-message-id="${String(id)}"]`);
+        if (!row) return;
+        const el = row.querySelector('.message-dm-read');
+        if (!el) return;
+        el.textContent = '✓✓';
+        el.classList.add('message-dm-read--seen');
+        el.setAttribute('aria-label', 'Прочитано');
+        el.title = 'Прочитано';
+    });
+}
+
 function florRenderMessageReactions(container, messageId, reactions, msgCtx) {
     if (!container) return;
     container.innerHTML = '';
@@ -2398,53 +3550,151 @@ function addMessageToUI(message) {
     timestamp.className = 'message-timestamp';
     timestamp.textContent = formatTimestamp(message.timestamp);
 
-    const bookmarkBtn = document.createElement('button');
-    bookmarkBtn.type = 'button';
-    bookmarkBtn.className = 'message-bookmark-btn';
-    bookmarkBtn.title = 'В закладки';
     const ctx = bookmarkContextKey();
     const bid = message.id || Date.now();
-    const isBm = getBookmarks().some((x) => x.id === bid && x.context === ctx);
-    bookmarkBtn.textContent = isBm ? '★' : '☆';
-    if (isBm) bookmarkBtn.classList.add('is-bookmarked');
-    bookmarkBtn.addEventListener('click', () => {
-        const added = toggleBookmarkEntry({
+
+    const moreWrap = document.createElement('div');
+    moreWrap.className = 'message-more-wrap';
+    const moreBtn = document.createElement('button');
+    moreBtn.type = 'button';
+    moreBtn.className = 'message-more-btn';
+    moreBtn.setAttribute('aria-label', 'Меню сообщения');
+    moreBtn.setAttribute('aria-expanded', 'false');
+    moreBtn.innerHTML =
+        '<svg class="message-more-icon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="19" r="2" fill="currentColor"/></svg>';
+
+    const menu = document.createElement('div');
+    menu.className = 'message-more-menu hidden';
+    menu.addEventListener('click', (e) => e.stopPropagation());
+
+    const reactionsContainer = document.createElement('div');
+    reactionsContainer.className = 'message-reactions message-reactions--menu';
+    if (message.reactions && message.reactions.length) {
+        florRenderMessageReactions(reactionsContainer, numericId, message.reactions, msgCtx);
+    }
+
+    const addReactBtn = document.createElement('button');
+    addReactBtn.type = 'button';
+    addReactBtn.className = 'message-menu-item';
+    addReactBtn.textContent = 'Добавить реакцию';
+    addReactBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        menu.classList.add('hidden');
+        moreBtn.setAttribute('aria-expanded', 'false');
+        showEmojiPickerForMessage(numericId);
+    });
+
+    const bookmarkBtn = document.createElement('button');
+    bookmarkBtn.type = 'button';
+    bookmarkBtn.className = 'message-menu-item';
+    const syncBmLabel = () => {
+        const isBm = getBookmarks().some((x) => x.id === bid && x.context === ctx);
+        bookmarkBtn.textContent = isBm ? 'Убрать из закладок' : 'В закладки';
+    };
+    syncBmLabel();
+    bookmarkBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleBookmarkEntry({
             id: bid,
             context: ctx,
             author: message.author,
             text: message.text,
             ts: message.timestamp
         });
-        bookmarkBtn.textContent = added ? '★' : '☆';
-        bookmarkBtn.classList.toggle('is-bookmarked', added);
+        syncBmLabel();
+    });
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'message-menu-item';
+    copyBtn.textContent = 'Копировать текст';
+    copyBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        menu.classList.add('hidden');
+        moreBtn.setAttribute('aria-expanded', 'false');
+        try {
+            await navigator.clipboard.writeText(String(message.text || ''));
+        } catch (_) {}
+    });
+
+    menu.appendChild(reactionsContainer);
+    menu.appendChild(addReactBtn);
+    menu.appendChild(bookmarkBtn);
+    menu.appendChild(copyBtn);
+
+    if (own && mid != null && Number.isFinite(Number(mid))) {
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'message-menu-item message-menu-item--danger';
+        delBtn.textContent = 'Удалить сообщение';
+        delBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            menu.classList.add('hidden');
+            moreBtn.setAttribute('aria-expanded', 'false');
+            if (!confirm('Удалить это сообщение?')) return;
+            try {
+                const path =
+                    msgCtx === 'dm'
+                        ? `/api/dm-messages/${encodeURIComponent(mid)}`
+                        : `/api/messages/${encodeURIComponent(mid)}`;
+                const r = await fetch(florApi(path), {
+                    method: 'DELETE',
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                const text = await r.text();
+                let d = {};
+                try {
+                    d = text ? JSON.parse(text) : {};
+                } catch (_) {
+                    d = {};
+                }
+                if (!r.ok) throw new Error(d.error || 'Не удалось удалить');
+                removeFlorMessageFromUI(mid, msgCtx);
+            } catch (err) {
+                alert(err.message || 'Ошибка удаления');
+            }
+        });
+        menu.appendChild(delBtn);
+    }
+    moreWrap.appendChild(moreBtn);
+    moreWrap.appendChild(menu);
+
+    moreBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const willOpen = menu.classList.contains('hidden');
+        closeAllOpenMessageMenus();
+        if (willOpen) {
+            menu.classList.remove('hidden');
+            moreBtn.setAttribute('aria-expanded', 'true');
+        } else {
+            menu.classList.add('hidden');
+            moreBtn.setAttribute('aria-expanded', 'false');
+        }
     });
 
     const text = document.createElement('div');
     text.className = 'message-text';
-    text.appendChild(linkifyToFragment(message.text));
-
-    const reactionsContainer = document.createElement('div');
-    reactionsContainer.className = 'message-reactions';
-    if (message.reactions && message.reactions.length) {
-        florRenderMessageReactions(reactionsContainer, numericId, message.reactions, msgCtx);
+    if (florMessageIsAttachmentOnlyText(message.text)) {
+        text.classList.add('message-text--attachment-only');
     }
-
-    const addReactionBtn = document.createElement('button');
-    addReactionBtn.className = 'add-reaction-btn';
-    addReactionBtn.textContent = '😊';
-    addReactionBtn.title = 'Добавить реакцию';
-    addReactionBtn.type = 'button';
-    addReactionBtn.addEventListener('click', () => showEmojiPickerForMessage(numericId));
+    text.appendChild(florMessageTextToFragment(message.text));
 
     if (!own) {
         header.appendChild(author);
     }
     header.appendChild(timestamp);
-    header.appendChild(bookmarkBtn);
+    if (msgCtx === 'dm' && own) {
+        const readEl = document.createElement('span');
+        const seen = florDmReadIsSeen(message.read);
+        readEl.className = 'message-dm-read' + (seen ? ' message-dm-read--seen' : '');
+        readEl.textContent = seen ? '✓✓' : '✓';
+        readEl.setAttribute('aria-label', seen ? 'Прочитано' : 'Доставлено');
+        readEl.title = seen ? 'Прочитано' : 'Доставлено';
+        header.appendChild(readEl);
+    }
+    header.appendChild(moreWrap);
     content.appendChild(header);
     content.appendChild(text);
-    content.appendChild(reactionsContainer);
-    content.appendChild(addReactionBtn);
 
     if (own) {
         messageGroup.appendChild(content);
@@ -2500,6 +3750,7 @@ function showEmojiPickerForInput() {
 }
 
 function showEmojiPickerForMessage(messageId) {
+    closeAllOpenMessageMenus();
     const emojis = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
     const picker = createEmojiPicker(emojis, (emoji) => {
         addReaction(messageId, emoji);
@@ -2568,11 +3819,407 @@ function updateMessageReactions(messageId, reactions, context) {
     florRenderMessageReactions(reactionsContainer, messageId, reactions, ctx);
 }
 
+let florVoiceRecorder = null;
+let florVoiceChunks = [];
+let florVoiceMimeType = '';
+let florVoiceRecording = false;
+let florVoiceCancelled = false;
+let florVoiceMaxTimer = null;
+let florVoiceStartTs = 0;
+let florVoiceIgnoreNextClick = false;
+let florVoiceUploading = false;
+let florVoiceCancelPendingStart = false;
+let florVoiceInitializing = false;
+
+function florPreferHoldToRecordVoice() {
+    try {
+        return window.matchMedia('(max-width: 768px), (pointer: coarse)').matches;
+    } catch (_) {
+        return false;
+    }
+}
+
+function florVoiceRecordingConstraints() {
+    const s = getMessengerSettings();
+    const audio = { echoCancellation: true, noiseSuppression: true };
+    const id = s.audioInputDeviceId && String(s.audioInputDeviceId).trim();
+    if (id) {
+        audio.deviceId = florUseRelaxedMediaConstraints() ? { ideal: id } : { exact: id };
+    }
+    return audio;
+}
+
+function florExtFromAudioMime(mime) {
+    const base = String(mime || '')
+        .split(';')[0]
+        .trim()
+        .toLowerCase();
+    const map = {
+        'audio/webm': 'webm',
+        'audio/ogg': 'ogg',
+        'audio/mp4': 'm4a',
+        'audio/x-m4a': 'm4a',
+        'audio/mpeg': 'mp3',
+        'audio/mp3': 'mp3',
+        'audio/wav': 'wav',
+        'audio/x-wav': 'wav',
+        'audio/aac': 'aac'
+    };
+    return map[base] || 'webm';
+}
+
+function florPickVoiceRecorderMime() {
+    if (typeof MediaRecorder === 'undefined') return '';
+    const types = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/ogg',
+        'audio/mp4',
+        'audio/aac'
+    ];
+    for (let i = 0; i < types.length; i++) {
+        if (MediaRecorder.isTypeSupported(types[i])) return types[i];
+    }
+    return '';
+}
+
+function florUpdateVoiceBtnUI(recording) {
+    const btn = document.getElementById('voiceMessageBtn');
+    if (!btn) return;
+    btn.classList.toggle('voice-msg-btn--recording', !!recording);
+    btn.setAttribute('aria-pressed', recording ? 'true' : 'false');
+}
+
+function florUpdateVoiceBtnUploading(loading) {
+    const btn = document.getElementById('voiceMessageBtn');
+    if (!btn) return;
+    btn.disabled = !!loading;
+    btn.classList.toggle('voice-msg-btn--uploading', !!loading);
+    btn.setAttribute('aria-busy', loading ? 'true' : 'false');
+}
+
+async function florStartVoiceMessageRecording() {
+    if (florVoiceRecording || florVoiceUploading || florVoiceInitializing) return;
+    florVoiceInitializing = true;
+    try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            alert('Микрофон недоступен в этом браузере');
+            return;
+        }
+        const mime = florPickVoiceRecorderMime();
+        if (!mime) {
+            alert('Запись голоса не поддерживается в этом браузере');
+            return;
+        }
+        florVoiceMimeType = mime;
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({
+                audio: florVoiceRecordingConstraints(),
+                video: false
+            });
+        } catch (e) {
+            alert(e && e.message ? e.message : 'Не удалось включить микрофон');
+            return;
+        }
+        if (florVoiceCancelPendingStart) {
+            stream.getTracks().forEach((t) => t.stop());
+            florVoiceCancelPendingStart = false;
+            return;
+        }
+        florVoiceChunks = [];
+        florVoiceCancelled = false;
+        florVoiceStartTs = Date.now();
+        let recorder;
+        try {
+            recorder = new MediaRecorder(stream, { mimeType: mime });
+        } catch (e) {
+            stream.getTracks().forEach((t) => t.stop());
+            alert('Не удалось начать запись');
+            return;
+        }
+        if (florVoiceCancelPendingStart) {
+            stream.getTracks().forEach((t) => t.stop());
+            florVoiceCancelPendingStart = false;
+            return;
+        }
+        florVoiceRecorder = recorder;
+        recorder.ondataavailable = (ev) => {
+            if (ev.data && ev.data.size > 0) florVoiceChunks.push(ev.data);
+        };
+        recorder.onstop = () => {
+            stream.getTracks().forEach((t) => t.stop());
+            const rec = florVoiceRecorder;
+            florVoiceRecorder = null;
+            florVoiceRecording = false;
+            florUpdateVoiceBtnUI(false);
+            if (florVoiceCancelled) {
+                florVoiceCancelled = false;
+                florVoiceChunks = [];
+                return;
+            }
+            const blobType = (rec && rec.mimeType) || florVoiceMimeType.split(';')[0] || 'audio/webm';
+            const blob = new Blob(florVoiceChunks, { type: blobType });
+            florVoiceChunks = [];
+            const elapsed = Date.now() - florVoiceStartTs;
+            if (elapsed < 450 || blob.size < 600) {
+                return;
+            }
+            florSendVoiceBlob(blob).catch((err) => {
+                console.error('Voice send:', err);
+                alert(err.message || 'Не удалось отправить голосовое');
+            });
+        };
+        try {
+            recorder.start(250);
+        } catch (e) {
+            stream.getTracks().forEach((t) => t.stop());
+            florVoiceRecorder = null;
+            alert('Не удалось начать запись');
+            return;
+        }
+        florVoiceRecording = true;
+        florUpdateVoiceBtnUI(true);
+        florVoiceMaxTimer = setTimeout(() => {
+            if (florVoiceRecording) florStopVoiceMessageRecording(false);
+        }, 120000);
+    } finally {
+        florVoiceInitializing = false;
+    }
+}
+
+function florStopVoiceMessageRecording(cancel) {
+    clearTimeout(florVoiceMaxTimer);
+    florVoiceMaxTimer = null;
+    if (!florVoiceRecorder) {
+        if (florVoiceInitializing) florVoiceCancelPendingStart = true;
+        return;
+    }
+    if (cancel) florVoiceCancelled = true;
+    try {
+        if (florVoiceRecorder.state === 'recording') {
+            florVoiceRecorder.stop();
+        } else {
+            florVoiceRecorder.stream.getTracks().forEach((t) => t.stop());
+            florVoiceRecorder = null;
+            florVoiceRecording = false;
+            florUpdateVoiceBtnUI(false);
+        }
+    } catch (e) {
+        florVoiceRecorder = null;
+        florVoiceRecording = false;
+        florUpdateVoiceBtnUI(false);
+    }
+}
+
+async function florSendVoiceBlob(blob) {
+    if (florVoiceUploading) return;
+    const mime = blob.type || 'audio/webm';
+    const ext = florExtFromAudioMime(mime);
+    const filename = `voice-${Date.now()}.${ext}`;
+    const file = new File([blob], filename, { type: mime });
+
+    florVoiceUploading = true;
+    florUpdateVoiceBtnUploading(true);
+    try {
+        if (currentView === 'dm' && currentDMUserId) {
+            if (!socket || !socket.connected) {
+                throw new Error('Нет соединения с сервером');
+            }
+            const fd = new FormData();
+            fd.append('file', file);
+            fd.append('receiverId', String(currentDMUserId));
+            const response = await fetch(florApi('/api/dm/upload'), {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+                body: fd
+            });
+            const raw = await response.text();
+            let fileData = {};
+            try {
+                fileData = raw ? JSON.parse(raw) : {};
+            } catch (_) {}
+            if (!response.ok) {
+                throw new Error(fileData.error || 'Не удалось загрузить аудио');
+            }
+            const line = `Голосовое: — ${fileData.url}`;
+            let payloadText = line;
+            if (window.florE2ee) {
+                payloadText = await florE2ee.encryptDmPlaintext(currentDMUserId, line);
+            }
+            socket.emit('send-dm', {
+                receiverId: currentDMUserId,
+                message: { text: payloadText }
+            });
+            return;
+        }
+
+        if (currentView === 'server') {
+            const byName = currentChannel ? getChannelIdByName(currentChannel) : null;
+            const channelId = byName != null ? byName : currentTextChannelId;
+            if (channelId == null) {
+                throw new Error('Выберите текстовый канал');
+            }
+            const cid = Number(channelId);
+            if (!Number.isFinite(cid)) {
+                throw new Error('Сбой выбора канала');
+            }
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('channelId', String(channelId));
+            const response = await fetch(florApi('/api/upload'), {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+                body: formData
+            });
+            const rawUpload = await response.text();
+            let fileData = {};
+            try {
+                fileData = rawUpload ? JSON.parse(rawUpload) : {};
+            } catch (_) {}
+            if (!response.ok) {
+                throw new Error(fileData.error || 'Не удалось загрузить аудио');
+            }
+            let outText = `Голосовое: — ${fileData.url}`;
+            if (window.florE2ee && currentServerRecord) {
+                const rawKey = await florE2ee.ensureChannelKey(
+                    cid,
+                    currentServerRecord.id,
+                    florApi,
+                    token,
+                    currentUser.id,
+                    florFetchMembersForE2ee
+                );
+                outText = await florE2ee.encryptWithChannelKey(rawKey, outText);
+            }
+            const post = await fetch(florApi('/api/messages'), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({ channelId: cid, text: outText })
+            });
+            const pdata = await post.json().catch(() => ({}));
+            if (!post.ok) {
+                throw new Error(pdata.error || 'Не удалось отправить сообщение');
+            }
+            const box = document.getElementById('messagesContainer');
+            let m = pdata.message;
+            if (m && window.florE2ee && currentServerRecord && m.text) {
+                try {
+                    const rawKey = await florE2ee.ensureChannelKey(
+                        cid,
+                        currentServerRecord.id,
+                        florApi,
+                        token,
+                        currentUser.id,
+                        florFetchMembersForE2ee
+                    );
+                    m = { ...m, text: await florE2ee.decryptWithChannelKey(rawKey, m.text) };
+                } catch (_) {}
+            }
+            const fk = m && m.id != null ? florMessageReactionKey('channel', m.id) : null;
+            if (
+                m &&
+                m.id != null &&
+                box &&
+                !box.querySelector(`[data-flor-msg-key="${florEscapeSelector(fk)}"]`)
+            ) {
+                addMessageToUI({ ...m, userId: m.senderId != null ? m.senderId : m.userId });
+                scrollToBottom();
+            }
+            return;
+        }
+
+        throw new Error('Откройте чат сервера или личные сообщения');
+    } finally {
+        florVoiceUploading = false;
+        florUpdateVoiceBtnUploading(false);
+    }
+}
+
+function initializeVoiceMessageButton() {
+    const btn = document.getElementById('voiceMessageBtn');
+    if (!btn) return;
+    const hold = () => florPreferHoldToRecordVoice();
+    if (hold()) {
+        btn.title = 'Удерживайте для записи голосового сообщения';
+    } else {
+        btn.title =
+            'Голосовое: нажмите — начать запись, нажмите снова — отправить. Esc — отмена.';
+    }
+
+    btn.addEventListener('pointerdown', (e) => {
+        if (!hold() || e.button !== 0 || btn.disabled) return;
+        e.preventDefault();
+        if (typeof e.target.setPointerCapture === 'function') {
+            e.target.setPointerCapture(e.pointerId);
+        }
+        florVoiceIgnoreNextClick = true;
+        florVoiceCancelPendingStart = false;
+        florStartVoiceMessageRecording();
+    });
+    btn.addEventListener('pointerup', (e) => {
+        if (!hold() || btn.disabled) return;
+        if (
+            typeof e.target.releasePointerCapture === 'function' &&
+            e.target.hasPointerCapture &&
+            e.target.hasPointerCapture(e.pointerId)
+        ) {
+            e.target.releasePointerCapture(e.pointerId);
+        }
+        if (florVoiceRecording) florStopVoiceMessageRecording(false);
+        else florVoiceCancelPendingStart = true;
+    });
+    btn.addEventListener('pointercancel', () => {
+        if (!hold()) return;
+        if (florVoiceRecording) florStopVoiceMessageRecording(true);
+        else florVoiceCancelPendingStart = true;
+    });
+    btn.addEventListener('click', (e) => {
+        if (hold()) {
+            if (florVoiceIgnoreNextClick) {
+                florVoiceIgnoreNextClick = false;
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            return;
+        }
+        if (btn.disabled) return;
+        e.preventDefault();
+        if (florVoiceInitializing) {
+            florVoiceCancelPendingStart = true;
+            return;
+        }
+        if (florVoiceRecording) florStopVoiceMessageRecording(false);
+        else florStartVoiceMessageRecording();
+    });
+    btn.addEventListener(
+        'contextmenu',
+        (e) => {
+            if (hold() && florVoiceRecording) e.preventDefault();
+        },
+        true
+    );
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape' || !florVoiceRecording || hold()) return;
+        florStopVoiceMessageRecording(true);
+    });
+}
+
 // File upload
 function initializeFileUpload() {
     const attachBtn = document.querySelector('.attach-btn');
+    if (!attachBtn) return;
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
+    fileInput.setAttribute(
+        'accept',
+        'image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.zip,.rar,.mp3,.mp4,.webm,.mov,.ogg,.wav,.m4a'
+    );
     fileInput.style.display = 'none';
     document.body.appendChild(fileInput);
     
@@ -2609,11 +4256,14 @@ async function uploadFile(file) {
             body: formData
         });
         
+        const rawUpload = await response.text();
+        let fileData = {};
+        try {
+            fileData = rawUpload ? JSON.parse(rawUpload) : {};
+        } catch (_) {}
         if (!response.ok) {
-            throw new Error('Upload failed');
+            throw new Error(fileData.error || 'Не удалось загрузить файл');
         }
-        
-        const fileData = await response.json();
         const line = `Файл: ${file.name} — ${fileData.url}`;
         const cid = Number(channelId);
         const post = await fetch(florApi('/api/messages'), {
@@ -2637,7 +4287,7 @@ async function uploadFile(file) {
         }
     } catch (error) {
         console.error('Upload error:', error);
-        alert('Не удалось загрузить файл');
+        alert(error.message || 'Не удалось загрузить файл');
     }
 }
 
@@ -2656,6 +4306,8 @@ function initializeUserControls() {
                 track.enabled = !isMuted;
             });
         }
+        florBroadcastVoiceSelfState();
+        florRestartLocalVoiceActivityMonitor();
     });
     
     deafenBtn.addEventListener('click', () => {
@@ -2671,15 +4323,9 @@ function initializeUserControls() {
                 muteBtn.querySelector('.icon-slashed').style.display = 'block';
             }
             
-            // Mute all remote audio
-            document.querySelectorAll('video[id^="remote-"]').forEach(video => {
-                video.volume = 0;
-            });
+            florRefreshAllRemoteVoiceVolumes();
         } else {
-            // Unmute remote audio
-            document.querySelectorAll('video[id^="remote-"]').forEach(video => {
-                video.volume = 1;
-            });
+            florRefreshAllRemoteVoiceVolumes();
         }
 
         // Update local stream audio tracks
@@ -2688,7 +4334,25 @@ function initializeUserControls() {
                 track.enabled = !isMuted;
             });
         }
+        florBroadcastVoiceSelfState();
+        florRestartLocalVoiceActivityMonitor();
     });
+
+    const up = document.querySelector('.user-panel .user-info');
+    if (up) {
+        const openSelfProfile = () => {
+            if (currentUser && currentUser.id != null) {
+                openFlorUserProfile(Number(currentUser.id));
+            }
+        };
+        up.addEventListener('click', openSelfProfile);
+        up.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                openSelfProfile();
+            }
+        });
+    }
 }
 
 function renderLoginHistoryList() {
@@ -2886,15 +4550,20 @@ function initializeSettingsHub() {
         if (!f) return;
         const fd = new FormData();
         fd.append('file', f);
-        fd.append('kind', kind);
-        const r = await fetch(florApi('/api/user/profile-photo'), {
+        const r = await fetch(florApi(`/api/user/profile-photo?kind=${encodeURIComponent(kind)}`), {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}` },
             body: fd
         });
-        const data = await r.json().catch(() => ({}));
+        const text = await r.text();
+        let data = {};
+        try {
+            data = text ? JSON.parse(text) : {};
+        } catch (_) {
+            throw new Error('Ответ сервера не JSON. Проверьте консоль сервера и адрес API.');
+        }
         if (!r.ok) {
-            throw new Error(data.error || 'Ошибка загрузки');
+            throw new Error(data.error || `Ошибка загрузки (${r.status})`);
         }
         if (data.avatar) {
             currentUser.avatar = data.avatar;
@@ -3004,6 +4673,15 @@ function initializeSettingsHub() {
     });
     document.getElementById('micTestStopBtn')?.addEventListener('click', () => stopMicTest());
 
+    document.getElementById('resetVoiceParticipantPrefsBtn')?.addEventListener('click', () => {
+        if (!confirm('Сбросить громкость и «не слышать» для всех участников в этом браузере?')) return;
+        saveMessengerSettings({ voiceParticipantPrefs: {} });
+        florRefreshAllRemoteVoiceVolumes();
+        if (florLastVoiceRoster.length) {
+            renderCallVoiceRoster(florLastVoiceRoster);
+        }
+    });
+
     document.getElementById('pwdChangeBtn')?.addEventListener('click', async () => {
         const cur = document.getElementById('pwdCurrent')?.value || '';
         const neu = document.getElementById('pwdNew')?.value || '';
@@ -3102,7 +4780,7 @@ function initializeSettingsHub() {
 
     logoutBtn.addEventListener('click', () => {
         if (!confirm('Выйти из аккаунта?')) return;
-        if (inCall) leaveVoiceChannel(true);
+        if (inCall) leaveVoiceChannel(true, { silent: true });
         localStorage.removeItem('token');
         localStorage.removeItem('currentUser');
         if (socket) socket.disconnect();
@@ -3133,7 +4811,8 @@ function initializeServerHeaderMenu() {
             openMembersOverlay();
         });
         drop.appendChild(b0);
-        const isOwner = currentUser && currentServerRecord.owner_id === currentUser.id;
+        const isOwner =
+            currentUser && Number(currentServerRecord.owner_id) === Number(currentUser.id);
         if (isOwner) {
             const b1 = document.createElement('button');
             b1.type = 'button';
@@ -3171,15 +4850,44 @@ function initializeServerHeaderMenu() {
     document.addEventListener('click', () => closeDrop());
 }
 
+async function populateServerSettingsDeleteChannels() {
+    const sel = document.getElementById('serverSettingsDeleteChSelect');
+    if (!sel || !currentServerRecord) return;
+    sel.innerHTML = '';
+    const opt0 = document.createElement('option');
+    opt0.value = '';
+    opt0.textContent = '— выберите канал —';
+    sel.appendChild(opt0);
+    const tree = await fetchServerChannels(currentServerRecord.id);
+    if (!tree || !Array.isArray(tree.categories)) {
+        return;
+    }
+    tree.categories.forEach((cat) => {
+        (cat.channels || []).forEach((c) => {
+            const opt = document.createElement('option');
+            opt.value = String(c.id);
+            const t = String(c.type || '').trim().toLowerCase() === 'voice' ? 'голос' : 'текст';
+            const catLabel = cat.name ? `${cat.name} · ` : '';
+            opt.textContent = `${catLabel}#${channelDisplayName(c.name)} (${t})`;
+            sel.appendChild(opt);
+        });
+    });
+}
+
 function openServerSettingsModal() {
     const ov = document.getElementById('serverSettingsOverlay');
     if (!ov || !currentServerRecord) return;
+    const iconFile = document.getElementById('serverSettingsIconFile');
+    if (iconFile) iconFile.value = '';
     document.getElementById('serverSettingsName').value = currentServerRecord.name || '';
     document.getElementById('serverSettingsIcon').value = currentServerRecord.icon || '';
     const ownerExtras = document.getElementById('serverSettingsOwnerExtras');
-    const isOwner = currentUser && currentServerRecord.owner_id === currentUser.id;
+    const isOwner = currentUser && Number(currentServerRecord.owner_id) === Number(currentUser.id);
     if (ownerExtras) {
         ownerExtras.classList.toggle('hidden', !isOwner);
+    }
+    if (isOwner) {
+        void populateServerSettingsDeleteChannels();
     }
     ov.classList.remove('hidden');
     ov.setAttribute('aria-hidden', 'false');
@@ -3230,6 +4938,43 @@ function initializeChannelSettingsPanel() {
 }
 
 function initializeServerSettingsSave() {
+    document.getElementById('serverSettingsIconPickBtn')?.addEventListener('click', () => {
+        document.getElementById('serverSettingsIconFile')?.click();
+    });
+    document.getElementById('serverSettingsIconFile')?.addEventListener('change', async (e) => {
+        const file = e.target?.files?.[0];
+        if (!file || !currentServerRecord) return;
+        if (Number(currentUser?.id) !== Number(currentServerRecord.owner_id)) {
+            alert('Только владелец может менять аватар группы');
+            e.target.value = '';
+            return;
+        }
+        const fd = new FormData();
+        fd.append('file', file);
+        try {
+            const response = await fetch(florApi(`/api/servers/${currentServerRecord.id}/icon`), {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+                body: fd
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || 'Ошибка загрузки');
+            }
+            if (data.server) {
+                currentServerRecord = data.server;
+                const idx = servers.findIndex((s) => Number(s.id) === Number(data.server.id));
+                if (idx >= 0) servers[idx] = data.server;
+                const iconEl = document.querySelector(`.server-icon[data-server-id="${data.server.id}"]`);
+                if (iconEl) florRenderServerIcon(iconEl, data.server);
+                document.getElementById('serverSettingsIcon').value = data.server.icon || '';
+            }
+        } catch (err) {
+            alert(err.message || 'Не удалось загрузить изображение');
+        }
+        e.target.value = '';
+    });
+
     document.getElementById('serverSettingsCloseBtn')?.addEventListener('click', () => {
         const ov = document.getElementById('serverSettingsOverlay');
         if (ov) {
@@ -3264,8 +5009,8 @@ function initializeServerSettingsSave() {
             if (idx >= 0) servers[idx] = data;
             const iconEl = document.querySelector(`.server-icon[data-server-id="${data.id}"]`);
             if (iconEl) {
-                iconEl.textContent = data.icon;
                 iconEl.title = data.name;
+                florRenderServerIcon(iconEl, data);
             }
             document.getElementById('serverName').textContent = data.name;
             document.getElementById('serverSettingsOverlay').classList.add('hidden');
@@ -3277,7 +5022,8 @@ function initializeServerSettingsSave() {
 
 function initializeServerCreateChannel() {
     document.getElementById('serverSettingsCreateChBtn')?.addEventListener('click', async () => {
-        if (!currentServerRecord || currentUser?.id !== currentServerRecord.owner_id) return;
+        if (!currentServerRecord || Number(currentUser?.id) !== Number(currentServerRecord.owner_id))
+            return;
         const nameInp = document.getElementById('serverSettingsNewChName');
         const name = nameInp?.value?.trim();
         const type = document.getElementById('serverSettingsNewChType')?.value || 'text';
@@ -3312,6 +5058,54 @@ function initializeServerCreateChannel() {
     });
 }
 
+function initializeServerDeleteChannel() {
+    document.getElementById('serverSettingsDeleteChBtn')?.addEventListener('click', async () => {
+        if (!currentServerRecord || Number(currentUser?.id) !== Number(currentServerRecord.owner_id)) {
+            return;
+        }
+        const sel = document.getElementById('serverSettingsDeleteChSelect');
+        const id = sel?.value?.trim();
+        if (!id) {
+            alert('Выберите канал в списке');
+            return;
+        }
+        const label = sel.options[sel.selectedIndex]?.text || id;
+        if (
+            !confirm(
+                `Удалить канал «${label}»?\n\nВсе сообщения и вложения в этом канале будут удалены безвозвратно.`
+            )
+        ) {
+            return;
+        }
+        try {
+            const response = await fetch(
+                florApi(`/api/servers/${currentServerRecord.id}/channels/${encodeURIComponent(id)}`),
+                {
+                    method: 'DELETE',
+                    headers: { Authorization: `Bearer ${token}` }
+                }
+            );
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.error || 'Не удалось удалить');
+            }
+            if (data.tree) {
+                renderChannelTree(data.tree);
+                flattenChannelTreeToMaps(data.tree);
+            }
+            if (Number(id) === Number(currentTextChannelId)) {
+                const keys = Object.keys(currentServerChannelMap || {});
+                if (keys.length) {
+                    switchChannel(keys[0]);
+                }
+            }
+            await populateServerSettingsDeleteChannels();
+        } catch (e) {
+            alert(e.message || 'Ошибка удаления');
+        }
+    });
+}
+
 function openMembersOverlay() {
     const ov = document.getElementById('membersOverlay');
     if (!ov || !currentServerRecord) return;
@@ -3340,13 +5134,80 @@ async function loadMembersList() {
             list.innerHTML = '<p class="settings-hint" style="margin:0;">Пока только вы.</p>';
             return;
         }
+        const myId = currentUser ? Number(currentUser.id) : null;
+        const amOwner = currentUser && Number(currentServerRecord.owner_id) === Number(currentUser.id);
         members.forEach((m) => {
             const row = document.createElement('div');
             row.className = 'member-row';
-            const av = escapeHtml(m.avatar || (m.username && m.username.charAt(0).toUpperCase()) || '?');
+            const uid = Number(m.id);
             const un = escapeHtml(m.username || '');
             const st = escapeHtml(friendStatusLabel(m.status));
-            row.innerHTML = `<div class="member-avatar">${av}</div><div><strong>${un}</strong><div class="settings-hint" style="margin:0;font-size:12px;">${st}</div></div>`;
+            const ownerBadge = m.isOwner ? '<span class="member-owner-badge">владелец</span>' : '';
+
+            const avEl = document.createElement('div');
+            avEl.className = 'member-avatar';
+            florFillAvatarEl(avEl, m.avatar, m.username);
+
+            const info = document.createElement('div');
+            info.className = 'member-row-info';
+            info.innerHTML = `<strong>${un}</strong> ${ownerBadge}<div class="settings-hint" style="margin:0;font-size:12px;">${st}</div>`;
+
+            const actions = document.createElement('div');
+            actions.className = 'member-row-actions';
+
+            row.appendChild(avEl);
+            row.appendChild(info);
+            row.appendChild(actions);
+
+            if (myId != null && uid === myId) {
+                const leaveBtn = document.createElement('button');
+                leaveBtn.type = 'button';
+                leaveBtn.className = 'settings-btn settings-btn--secondary';
+                leaveBtn.textContent = 'Покинуть';
+                leaveBtn.addEventListener('click', async () => {
+                    if (!confirm('Покинуть эту группу?')) return;
+                    try {
+                        const r = await fetch(
+                            florApi(`/api/servers/${currentServerRecord.id}/members/${uid}`),
+                            { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+                        );
+                        const d = await r.json();
+                        if (!r.ok) throw new Error(d.error || 'Ошибка');
+                        const membersOv = document.getElementById('membersOverlay');
+                        if (membersOv) {
+                            membersOv.classList.add('hidden');
+                            membersOv.setAttribute('aria-hidden', 'true');
+                        }
+                        servers = servers.filter((s) => Number(s.id) !== Number(currentServerRecord.id));
+                        currentServerRecord = null;
+                        showFriendsView();
+                    } catch (err) {
+                        alert(err.message || 'Не удалось выйти');
+                    }
+                });
+                actions.appendChild(leaveBtn);
+            } else if (amOwner && !m.isOwner) {
+                const kickBtn = document.createElement('button');
+                kickBtn.type = 'button';
+                kickBtn.className = 'settings-btn';
+                kickBtn.textContent = 'Исключить';
+                kickBtn.addEventListener('click', async () => {
+                    if (!confirm(`Исключить ${m.username || 'участника'} из группы?`)) return;
+                    try {
+                        const r = await fetch(
+                            florApi(`/api/servers/${currentServerRecord.id}/members/${uid}`),
+                            { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+                        );
+                        const d = await r.json();
+                        if (!r.ok) throw new Error(d.error || 'Ошибка');
+                        await loadMembersList();
+                    } catch (err) {
+                        alert(err.message || 'Не удалось исключить');
+                    }
+                });
+                actions.appendChild(kickBtn);
+            }
+
             list.appendChild(row);
         });
     } catch (e) {
@@ -3406,13 +5267,20 @@ function renderBookmarksPanelList() {
     const arr = getBookmarks();
     list.innerHTML = '';
     if (!arr.length) {
-        list.textContent = 'Помечайте важные сообщения звёздочкой рядом с временем.';
+        list.textContent = 'Помечайте важные сообщения через кнопку меню у сообщения → «В закладки».';
         return;
     }
     arr.forEach((b) => {
         const wrap = document.createElement('div');
         wrap.className = 'bookmark-item';
-        wrap.innerHTML = `<strong>${escapeHtml(b.author)}</strong><div>${escapeHtml(b.text || '').slice(0, 500)}</div>`;
+        const authorEl = document.createElement('strong');
+        authorEl.textContent = b.author || '';
+        const body = document.createElement('div');
+        body.className = 'bookmark-item__body';
+        const raw = b.text == null ? '' : String(b.text);
+        body.appendChild(florMessageTextToFragment(raw.length > 4000 ? `${raw.slice(0, 4000)}…` : raw));
+        wrap.appendChild(authorEl);
+        wrap.appendChild(body);
         const rm = document.createElement('button');
         rm.type = 'button';
         rm.className = 'settings-btn';
@@ -3448,7 +5316,22 @@ function initializeBookmarksPanel() {
 function initializeChatTools() {
     document.getElementById('chatMessageSearch')?.addEventListener('input', (e) => {
         filterChatMessages(e.target.value);
+        const g = document.getElementById('florGlobalSearchInput');
+        if (g && window.matchMedia('(min-width: 769px)').matches) {
+            g.value = e.target.value;
+        }
     });
+    const globalS = document.getElementById('florGlobalSearchInput');
+    if (globalS) {
+        globalS.addEventListener('input', () => {
+            const ch = document.getElementById('chatMessageSearch');
+            const chatOpen = document.getElementById('chatView')?.style.display !== 'none';
+            if (ch && chatOpen) {
+                ch.value = globalS.value;
+                filterChatMessages(globalS.value);
+            }
+        });
+    }
     document.getElementById('exportChatBtn')?.addEventListener('click', () => {
         if (!lastLoadedMessagesForExport.length) {
             alert('Сначала откройте чат — в файл попадут уже загруженные сообщения.');
@@ -3481,11 +5364,13 @@ function initializeHotkeys() {
             closeAllOverlays();
         }
         if (e.ctrlKey && (e.key === 'k' || e.key === 'K')) {
-            const inp = document.getElementById('chatMessageSearch');
-            if (inp && document.getElementById('chatView')?.style.display !== 'none') {
-                e.preventDefault();
-                inp.focus();
-            }
+            const chatOpen = document.getElementById('chatView')?.style.display !== 'none';
+            if (!chatOpen) return;
+            e.preventDefault();
+            const desk =
+                window.matchMedia('(min-width: 769px)').matches &&
+                document.getElementById('florGlobalSearchInput');
+            (desk || document.getElementById('chatMessageSearch'))?.focus();
         }
     });
 }
@@ -3503,12 +5388,14 @@ async function joinVoiceChannel(channelId, displayLabel) {
             }
             return;
         }
-        leaveVoiceChannel(true);
+        leaveVoiceChannel(true, { silent: true });
     }
 
     inCall = true;
     activeVoiceRoomKey = roomKey;
     activeVoiceChannelName = displayLabel;
+    isVideoEnabled = false;
+    window.currentCallDetails = null;
 
     document.querySelectorAll('.voice-channel').forEach((ch) => ch.classList.remove('in-call'));
     document.querySelector(`.voice-channel[data-channel-id="${channelId}"]`)?.classList.add('in-call');
@@ -3521,6 +5408,13 @@ async function joinVoiceChannel(channelId, displayLabel) {
 
     try {
         await initializeMedia({ voice: true });
+        /* Не слать join, если за время await пользователь уже вышел (ЛС-звонок, отклонение и т.д.) */
+        if (!inCall || activeVoiceRoomKey !== roomKey) {
+            return;
+        }
+        updateLocalCallParticipantUI();
+        updateCallButtons();
+        florBroadcastVoiceSelfState();
 
         if (socket && socket.connected) {
             socket.emit('join-voice-channel', {
@@ -3528,6 +5422,8 @@ async function joinVoiceChannel(channelId, displayLabel) {
                 channelId
             });
         }
+        florStartLocalVoiceActivityMonitor();
+        florSyncDmVideoCallLayout();
     } catch (error) {
         console.error('Error initializing media:', error);
         alert(florMediaAccessHint());
@@ -3539,29 +5435,12 @@ async function initializeMedia(opts) {
     opts = opts || {};
     const voiceOnly = opts.voice === true;
     try {
-        const s = getMessengerSettings();
-        const audio = {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-            sampleRate: 48000,
-            sampleSize: 16,
-            channelCount: 1
-        };
-        if (s.audioInputDeviceId && String(s.audioInputDeviceId).trim()) {
-            audio.deviceId = { exact: String(s.audioInputDeviceId).trim() };
-        }
         const constraints = {
-            audio,
-            video: voiceOnly
-                ? false
-                : {
-                      width: { ideal: 1280 },
-                      height: { ideal: 720 }
-                  }
+            audio: florAudioCaptureConstraints(),
+            video: voiceOnly ? false : florVideoCaptureConstraints()
         };
 
-        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        localStream = await florGetUserMediaReliable(constraints);
         
         const localVideo = document.getElementById('localVideo');
         localVideo.srcObject = localStream;
@@ -3584,10 +5463,16 @@ async function initializeMedia(opts) {
     }
 }
 
-function leaveVoiceChannel(force = false) {
+function leaveVoiceChannel(force = false, opts) {
+    opts = opts || {};
     if (!inCall) return;
 
     if (force) {
+        florResetCallRingAndJoinSfx();
+        if (!opts.silent) {
+            florPlayCallSfx('leave');
+        }
+        florStopLocalVoiceActivityMonitor();
         inCall = false;
 
         if (localStream) {
@@ -3612,6 +5497,8 @@ function leaveVoiceChannel(force = false) {
 
         document.querySelectorAll('.voice-channel').forEach(ch => ch.classList.remove('in-call'));
         document.getElementById('remoteParticipants').innerHTML = '';
+        window.currentCallDetails = null;
+        florSyncDmVideoCallLayout();
     }
 
     const callInterface = document.getElementById('callInterface');
@@ -3623,6 +5510,7 @@ function leaveVoiceChannel(force = false) {
         isVideoEnabled = true;
         isAudioEnabled = true;
         updateCallButtons();
+        updateLocalCallParticipantUI();
     }
 }
 
@@ -3646,7 +5534,7 @@ function initializeCallControls() {
     });
     
     toggleVideoBtn.addEventListener('click', () => {
-        toggleVideo();
+        void toggleVideo();
     });
     
     toggleAudioBtn.addEventListener('click', () => {
@@ -3658,16 +5546,41 @@ function initializeCallControls() {
     });
 }
 
-function toggleVideo() {
+async function toggleVideo() {
     if (!localStream) return;
-    
-    isVideoEnabled = !isVideoEnabled;
-    localStream.getVideoTracks().forEach(track => {
-        track.enabled = isVideoEnabled;
-    });
-    
-    // Notify peer about video state change
-    Object.keys(peerConnections).forEach(socketId => {
+
+    const nextOn = !isVideoEnabled;
+    if (nextOn) {
+        let vt = localStream.getVideoTracks()[0];
+        if (!vt) {
+            try {
+                const vs = await florGetUserMediaReliable({
+                    video: florVideoCaptureConstraints(),
+                    audio: false
+                });
+                vt = vs.getVideoTracks()[0];
+                localStream.addTrack(vt);
+                Object.values(peerConnections).forEach((pc) => {
+                    try {
+                        pc.addTrack(vt, localStream);
+                    } catch (_) {}
+                });
+            } catch (e) {
+                console.error(e);
+                alert(florMediaAccessHint());
+                return;
+            }
+        }
+        if (vt) vt.enabled = true;
+        isVideoEnabled = true;
+    } else {
+        localStream.getVideoTracks().forEach((track) => {
+            track.enabled = false;
+        });
+        isVideoEnabled = false;
+    }
+
+    Object.keys(peerConnections).forEach((socketId) => {
         if (socket && socket.connected) {
             socket.emit('video-toggle', {
                 to: socketId,
@@ -3675,8 +5588,10 @@ function toggleVideo() {
             });
         }
     });
-    
+
     updateCallButtons();
+    updateLocalCallParticipantUI();
+    florBroadcastVoiceSelfState();
 }
 
 function toggleAudio() {
@@ -3696,6 +5611,8 @@ function toggleAudio() {
     }
     
     updateCallButtons();
+    florBroadcastVoiceSelfState();
+    florRestartLocalVoiceActivityMonitor();
 }
 
 async function toggleScreenShare() {
@@ -3858,7 +5775,8 @@ async function loadDMHistory(userId) {
                     avatar: message.avatar || message.username.charAt(0).toUpperCase(),
                     text: txt,
                     timestamp: message.created_at,
-                    reactions: message.reactions
+                    reactions: message.reactions,
+                    read: message.read
                 });
             }
         } else {
@@ -3870,6 +5788,8 @@ async function loadDMHistory(userId) {
 
     scrollToBottom();
     filterChatMessages(document.getElementById('chatMessageSearch')?.value || '');
+    void florMarkDmConversationRead(userId);
+    florSyncGlobalChatSearchFromHeader();
 }
 
 florDevLog('FLOR MESSENGER initialized successfully!');
@@ -3883,8 +5803,15 @@ function populateDMList(friends) {
 
    if (friends.length === 0) {
        const emptyDM = document.createElement('div');
-       emptyDM.className = 'empty-dm-list';
-       emptyDM.textContent = 'Пока нет переписок.';
+       emptyDM.className = 'flor-dm-empty-state';
+       emptyDM.setAttribute('role', 'status');
+       emptyDM.innerHTML = `
+           <div class="flor-dm-empty-state__icon" aria-hidden="true">
+               <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
+           </div>
+           <div class="flor-dm-empty-state__title">Пока нет переписок</div>
+           <p class="flor-dm-empty-state__hint">Добавьте друга во вкладке «Добавить» — и начните личную беседу.</p>
+       `;
        dmList.appendChild(emptyDM);
        return;
    }
@@ -3920,7 +5847,7 @@ function populateDMList(friends) {
        dmItem.appendChild(av);
        dmItem.appendChild(main);
        dmItem.addEventListener('click', () => {
-           startDM(friend.id, friend.username);
+           startDM(friend.id, friend.username, friend.avatar);
        });
        dmList.appendChild(dmItem);
    });
@@ -3929,12 +5856,24 @@ function populateDMList(friends) {
 // WebRTC Functions
 function createPeerConnection(remoteSocketId, isInitiator) {
     florDevLog(`Creating peer connection with ${remoteSocketId}, initiator: ${isInitiator}`);
-    
-    if (peerConnections[remoteSocketId]) {
-        florDevLog('Peer connection already exists');
-        return peerConnections[remoteSocketId];
+
+    const existing = peerConnections[remoteSocketId];
+    if (existing) {
+        const dead =
+            existing.signalingState === 'closed' ||
+            existing.connectionState === 'closed' ||
+            existing.iceConnectionState === 'closed' ||
+            existing.iceConnectionState === 'failed';
+        if (!dead) {
+            florDevLog('Peer connection already exists');
+            return existing;
+        }
+        try {
+            existing.close();
+        } catch (_) {}
+        delete peerConnections[remoteSocketId];
     }
-    
+
     const pc = new RTCPeerConnection({
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -3994,222 +5933,87 @@ function createPeerConnection(remoteSocketId, isInitiator) {
         }
     };
 
-    // Handle incoming remote stream
+    // Handle incoming remote stream (аватар по умолчанию, видео только при живой камере)
     pc.ontrack = (event) => {
-        florDevLog('Received remote track:', event.track.kind, 'Stream ID:', event.streams[0]?.id);
-        
+        florDevLog('Received remote track:', event.track.kind);
+        if (
+            window.currentCallDetails &&
+            !window.currentCallDetails.isInitiator &&
+            !florRemoteJoinSfxDone.has(remoteSocketId) &&
+            (event.track.kind === 'audio' || event.track.kind === 'video')
+        ) {
+            florRemoteJoinSfxDone.add(remoteSocketId);
+            florPlayCallSfx('join');
+        }
         const remoteParticipants = document.getElementById('remoteParticipants');
-        
+        if (!remoteParticipants) return;
+
         let participantDiv = document.getElementById(`participant-${remoteSocketId}`);
         let remoteVideo = document.getElementById(`remote-${remoteSocketId}`);
-        
+        let avEl = null;
+        const meta = florVoicePeerMeta[remoteSocketId] || {};
+
         if (!participantDiv) {
             participantDiv = document.createElement('div');
             participantDiv.className = 'participant';
             participantDiv.id = `participant-${remoteSocketId}`;
-            
+
+            avEl = document.createElement('div');
+            avEl.className = 'flor-call-tile-avatar';
+            florFillAvatarEl(avEl, meta.avatar, meta.username || 'Участник');
+
             remoteVideo = document.createElement('video');
             remoteVideo.id = `remote-${remoteSocketId}`;
+            remoteVideo.className = 'flor-call-tile-video hidden';
             remoteVideo.autoplay = true;
             remoteVideo.playsInline = true;
             remoteVideo.setAttribute('playsinline', '');
             remoteVideo.setAttribute('webkit-playsinline', '');
-            remoteVideo.volume = isDeafened ? 0 : 1; // Respect deafened state
-            
+
             const participantName = document.createElement('div');
             participantName.className = 'participant-name';
-            participantName.textContent = 'Собеседник';
-            
+            participantName.textContent = meta.username || 'Участник';
+
+            participantDiv.appendChild(avEl);
             participantDiv.appendChild(remoteVideo);
             participantDiv.appendChild(participantName);
             remoteParticipants.appendChild(participantDiv);
-        }
-        
-        // Set the stream to the video element
-        if (event.streams && event.streams[0]) {
-            florDevLog('Setting remote stream to video element');
+            if (meta.userId != null) participantDiv.setAttribute('data-user-id', String(meta.userId));
+        } else {
+            avEl = participantDiv.querySelector('.flor-call-tile-avatar');
             remoteVideo = document.getElementById(`remote-${remoteSocketId}`);
-            if (remoteVideo) {
-                remoteVideo.srcObject = event.streams[0];
-                florTryPlayMediaElement(remoteVideo);
-                const el = remoteVideo;
-                document.addEventListener(
-                    'pointerdown',
-                    () => florTryPlayMediaElement(el),
-                    { capture: true, once: true }
-                );
+        }
+
+        if (event.streams && event.streams[0] && remoteVideo) {
+            remoteVideo.srcObject = event.streams[0];
+            florTryPlayMediaElement(remoteVideo);
+            florApplyRemoteParticipantAudio(remoteSocketId);
+            document.addEventListener(
+                'pointerdown',
+                () => florTryPlayMediaElement(remoteVideo),
+                { capture: true, once: true }
+            );
+        }
+
+        const syncVideoVisibility = () => {
+            if (!remoteVideo || !remoteVideo.srcObject) return;
+            const vt = remoteVideo.srcObject.getVideoTracks()[0];
+            const showVid = vt && vt.enabled && vt.readyState === 'live';
+            if (showVid) {
+                remoteVideo.classList.remove('hidden');
+                if (avEl) avEl.classList.add('hidden');
+            } else {
+                remoteVideo.classList.add('hidden');
+                if (avEl) avEl.classList.remove('hidden');
             }
-        }
-        
-        // Initialize resizable videos
-        function initializeResizableVideos() {
-            const callInterface = document.getElementById('callInterface');
-            const participants = callInterface.querySelectorAll('.participant');
-            
-            participants.forEach(participant => {
-                makeResizable(participant);
-            });
-            
-            // Make call interface resizable too
-            makeInterfaceResizable(callInterface);
-        }
-        
-        // Make individual video resizable
-        function makeResizable(element) {
-            // Add resize handle
-            const resizeHandle = document.createElement('div');
-            resizeHandle.className = 'resize-handle';
-            resizeHandle.innerHTML = '↘';
-            resizeHandle.style.cssText = `
-                position: absolute;
-                bottom: 5px;
-                right: 5px;
-                width: 20px;
-                height: 20px;
-                background: rgba(255,255,255,0.3);
-                cursor: nwse-resize;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                border-radius: 3px;
-                font-size: 12px;
-                color: white;
-                user-select: none;
-            `;
-            
-            // Add video size controls
-            const sizeControls = document.createElement('div');
-            sizeControls.className = 'video-size-controls';
-            sizeControls.innerHTML = `
-                <button class="size-control-btn minimize-btn" title="Свернуть">_</button>
-                <button class="size-control-btn maximize-btn" title="Размер">□</button>
-                <button class="size-control-btn fullscreen-btn" title="На весь экран">⛶</button>
-            `;
-            
-            if (!element.querySelector('.resize-handle')) {
-                element.appendChild(resizeHandle);
-                element.appendChild(sizeControls);
-                element.style.resize = 'both';
-                element.style.overflow = 'auto';
-                element.style.minWidth = '150px';
-                element.style.minHeight = '100px';
-                element.style.maxWidth = '90vw';
-                element.style.maxHeight = '90vh';
-                element.setAttribute('data-resizable', 'true');
-                
-                // Add double-click for fullscreen
-                element.addEventListener('dblclick', function(e) {
-                    if (!e.target.closest('.video-size-controls')) {
-                        toggleVideoFullscreen(element);
-                    }
-                });
-                
-                // Size control buttons
-                const minimizeBtn = sizeControls.querySelector('.minimize-btn');
-                const maximizeBtn = sizeControls.querySelector('.maximize-btn');
-                const fullscreenBtn = sizeControls.querySelector('.fullscreen-btn');
-                
-                minimizeBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    element.classList.toggle('minimized');
-                    element.classList.remove('maximized');
-                });
-                
-                maximizeBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    element.classList.toggle('maximized');
-                    element.classList.remove('minimized');
-                });
-                
-                fullscreenBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    const video = element.querySelector('video');
-                    if (video && video.requestFullscreen) {
-                        video.requestFullscreen();
-                    }
-                });
-            }
-        }
-        
-        // Toggle video fullscreen
-        function toggleVideoFullscreen(element) {
-            element.classList.toggle('maximized');
-            if (element.classList.contains('maximized')) {
-                element.classList.remove('minimized');
-            }
-        }
-        
-        // Make call interface resizable
-        function makeInterfaceResizable(callInterface) {
-            const resizeHandle = document.createElement('div');
-            resizeHandle.className = 'interface-resize-handle';
-            resizeHandle.style.cssText = `
-                position: absolute;
-                bottom: 0;
-                right: 0;
-                width: 15px;
-                height: 15px;
-                cursor: nwse-resize;
-                background: linear-gradient(135deg, transparent 50%, #5865f2 50%);
-                border-bottom-right-radius: 12px;
-            `;
-            
-            if (!callInterface.querySelector('.interface-resize-handle')) {
-                callInterface.appendChild(resizeHandle);
-                
-                let isResizing = false;
-                let startWidth = 0;
-                let startHeight = 0;
-                let startX = 0;
-                let startY = 0;
-                
-                resizeHandle.addEventListener('mousedown', (e) => {
-                    isResizing = true;
-                    startWidth = parseInt(document.defaultView.getComputedStyle(callInterface).width, 10);
-                    startHeight = parseInt(document.defaultView.getComputedStyle(callInterface).height, 10);
-                    startX = e.clientX;
-                    startY = e.clientY;
-                    e.preventDefault();
-                });
-                
-                document.addEventListener('mousemove', (e) => {
-                    if (!isResizing) return;
-                    
-                    const newWidth = startWidth + e.clientX - startX;
-                    const newHeight = startHeight + e.clientY - startY;
-                    
-                    if (newWidth > 300 && newWidth < window.innerWidth * 0.9) {
-                        callInterface.style.width = newWidth + 'px';
-                    }
-                    if (newHeight > 200 && newHeight < window.innerHeight * 0.9) {
-                        callInterface.style.height = newHeight + 'px';
-                    }
-                });
-                
-                document.addEventListener('mouseup', () => {
-                    isResizing = false;
-                });
-            }
-        }
-        
-        // Update resizable functionality when new participants join
-        const originalOntrack = RTCPeerConnection.prototype.ontrack;
-        window.observeNewParticipants = function() {
-            setTimeout(() => {
-                const participants = document.querySelectorAll('.participant:not([data-resizable])');
-                participants.forEach(participant => {
-                    participant.setAttribute('data-resizable', 'true');
-                    makeResizable(participant);
-                });
-            }, 500);
         };
-        
-        // Make the new participant video resizable after a short delay
-        setTimeout(() => {
-            if (typeof makeResizable === 'function' && participantDiv) {
-                makeResizable(participantDiv);
-            }
-        }, 100);
+
+        if (event.track.kind === 'video') {
+            event.track.addEventListener('unmute', syncVideoVisibility);
+            event.track.addEventListener('mute', syncVideoVisibility);
+            event.track.addEventListener('ended', syncVideoVisibility);
+            syncVideoVisibility();
+        }
     };
 
     // Create offer if initiator with modern constraints

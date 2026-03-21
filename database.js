@@ -324,6 +324,38 @@ const messageDB = {
                 else resolve(row ? row.channel_id : null);
             });
         });
+    },
+
+    getMeta: (messageId) => {
+        return new Promise((resolve, reject) => {
+            db.get(
+                'SELECT id, user_id, channel_id FROM messages WHERE id = ?',
+                [messageId],
+                (err, row) => {
+                    if (err) reject(err);
+                    else resolve(row || null);
+                }
+            );
+        });
+    },
+
+    deleteOwn: (messageId, userId) => {
+        return new Promise((resolve, reject) => {
+            db.run('DELETE FROM reactions WHERE message_id = ?', [messageId], (e1) => {
+                if (e1) {
+                    reject(e1);
+                    return;
+                }
+                db.run(
+                    'DELETE FROM messages WHERE id = ? AND user_id = ?',
+                    [messageId, userId],
+                    function (err) {
+                        if (err) reject(err);
+                        else resolve({ changes: this.changes });
+                    }
+                );
+            });
+        });
     }
 };
 
@@ -415,6 +447,58 @@ const channelDB = {
                 }
             );
         });
+    },
+
+    /** Сколько каналов данного типа на сервере (type: text | voice) */
+    countByServerAndType: (serverId, type) => {
+        const t = String(type || '').trim().toLowerCase();
+        return new Promise((resolve, reject) => {
+            db.get(
+                'SELECT COUNT(1) AS c FROM channels WHERE server_id = ? AND LOWER(TRIM(type)) = ?',
+                [serverId, t],
+                (err, row) => {
+                    if (err) reject(err);
+                    else resolve(row && row.c != null ? Number(row.c) : 0);
+                }
+            );
+        });
+    },
+
+    /**
+     * Удалить канал и связанные строки (реакции, сообщения, файлы, E2EE-обёртки).
+     */
+    deleteCascade: (channelId) => {
+        const cid = parseInt(channelId, 10);
+        if (Number.isNaN(cid)) {
+            return Promise.reject(new Error('Некорректный канал'));
+        }
+        const run = (sql, params = []) =>
+            new Promise((resolve, reject) => {
+                db.run(sql, params, function (err) {
+                    if (err) reject(err);
+                    else resolve(this.changes);
+                });
+            });
+        return (async () => {
+            await run('BEGIN IMMEDIATE TRANSACTION');
+            try {
+                await run(
+                    'DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE channel_id = ?)',
+                    [cid]
+                );
+                await run('DELETE FROM messages WHERE channel_id = ?', [cid]);
+                await run('DELETE FROM file_uploads WHERE channel_id = ?', [cid]);
+                await run('DELETE FROM channel_key_wraps WHERE channel_id = ?', [cid]);
+                const chg = await run('DELETE FROM channels WHERE id = ?', [cid]);
+                await run('COMMIT');
+                return { changes: chg };
+            } catch (e) {
+                try {
+                    await run('ROLLBACK');
+                } catch (_) {}
+                throw e;
+            }
+        })();
     }
 };
 
@@ -464,6 +548,46 @@ const dmDB = {
                 if (err) reject(err);
                 else resolve();
             });
+        });
+    },
+
+    /** Все входящие от partnerId, которые я ещё не отметил прочитанными — пометить и вернуть id (для синхронизации на устройствах собеседника). */
+    markIncomingReadReturningIds: (readerId, partnerId) => {
+        return new Promise((resolve, reject) => {
+            const sqlSel =
+                'SELECT id FROM direct_messages WHERE receiver_id = ? AND sender_id = ? AND COALESCE(read, 0) = 0';
+            db.all(sqlSel, [readerId, partnerId], (err, rows) => {
+                if (err) return reject(err);
+                const ids = (rows || []).map((r) => r.id);
+                if (!ids.length) return resolve({ ids: [] });
+                const ph = ids.map(() => '?').join(',');
+                db.run(`UPDATE direct_messages SET read = 1 WHERE id IN (${ph})`, ids, (e2) => {
+                    if (e2) reject(e2);
+                    else resolve({ ids });
+                });
+            });
+        });
+    },
+
+    deleteReactionsFor: (dmId) => {
+        return new Promise((resolve, reject) => {
+            db.run('DELETE FROM dm_reactions WHERE direct_message_id = ?', [dmId], (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+    },
+
+    deleteOwnMessage: (messageId, senderId) => {
+        return new Promise((resolve, reject) => {
+            db.run(
+                'DELETE FROM direct_messages WHERE id = ? AND sender_id = ?',
+                [messageId, senderId],
+                function (err) {
+                    if (err) reject(err);
+                    else resolve({ changes: this.changes });
+                }
+            );
         });
     }
 };
@@ -816,6 +940,19 @@ const serverDB = {
         });
     },
 
+    removeMember: (serverId, userId) => {
+        return new Promise((resolve, reject) => {
+            db.run(
+                'DELETE FROM server_members WHERE server_id = ? AND user_id = ?',
+                [serverId, userId],
+                function (err) {
+                    if (err) reject(err);
+                    else resolve({ changes: this.changes });
+                }
+            );
+        });
+    },
+
     getMembers: (serverId) => {
         return new Promise((resolve, reject) => {
             const sql = `
@@ -858,8 +995,11 @@ const serverDB = {
             vals.push(String(fields.name).trim());
         }
         if (fields.icon !== undefined && fields.icon !== null) {
+            const s = String(fields.icon).trim();
+            const iconVal =
+                s.startsWith('/uploads/') || /^https?:\/\//i.test(s) ? s.slice(0, 512) : s.slice(0, 16);
             parts.push('icon = ?');
-            vals.push(String(fields.icon).trim().slice(0, 16));
+            vals.push(iconVal);
         }
         if (parts.length === 0) {
             return Promise.resolve();
