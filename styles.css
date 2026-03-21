@@ -88,6 +88,29 @@ body {
     padding-right: env(safe-area-inset-right, 0px);
 }
 
+.flor-sidebar-shell {
+    display: flex;
+    flex-direction: row;
+    flex-shrink: 0;
+    min-height: 0;
+    height: 100%;
+    max-height: 100%;
+}
+
+.flor-mobile-nav-backdrop {
+    display: none;
+}
+
+.flor-mobile-nav-btn {
+    display: none;
+    flex-shrink: 0;
+    margin-right: 2px;
+}
+
+.friends-header .flor-mobile-nav-btn {
+    margin-right: 6px;
+}
+
 ::selection {
     background: rgba(124, 58, 237, 0.22);
     color: var(--flor-text);
@@ -2191,33 +2214,218 @@ html[data-theme='dark'] .message-avatar {
     }
 }
 
-@media (max-width: 700px) {
-    body {
-        flex-direction: column;
+@media (max-width: 768px) {
+    .flor-mobile-nav-btn {
+        display: flex;
+    }
+
+    .flor-mobile-nav-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 210;
+        background: rgba(22, 16, 36, 0.48);
+        -webkit-backdrop-filter: blur(2px);
+        backdrop-filter: blur(2px);
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        transition: opacity 0.22s ease, visibility 0.22s ease;
+        touch-action: manipulation;
+    }
+
+    html[data-theme='dark'] .flor-mobile-nav-backdrop {
+        background: rgba(0, 0, 0, 0.58);
+    }
+
+    body.flor-mobile-sidebar-open .flor-mobile-nav-backdrop {
+        opacity: 1;
+        visibility: visible;
+        pointer-events: auto;
+    }
+
+    .flor-sidebar-shell {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        z-index: 220;
+        height: 100dvh;
+        max-height: 100dvh;
+        width: min(100vw, calc(72px + min(292px, calc(100vw - 72px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)))));
+        box-shadow: 8px 0 36px rgba(45, 20, 90, 0.22);
+        transform: translateX(-100%);
+        transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+        pointer-events: auto;
+    }
+
+    body.flor-mobile-sidebar-open .flor-sidebar-shell {
+        transform: translateX(0);
     }
 
     .server-list {
-        flex-direction: row;
-        width: 100%;
-        height: auto;
-        padding: calc(8px + env(safe-area-inset-top, 0px)) max(8px, env(safe-area-inset-left, 0px)) 8px
-            max(8px, env(safe-area-inset-right, 0px));
-        overflow-x: auto;
-        overflow-y: hidden;
-        border-right: none;
-        border-bottom: 1px solid var(--flor-border);
+        width: 72px;
+        flex-shrink: 0;
+        flex-direction: column;
+        height: 100%;
+        max-height: 100%;
+        padding-top: calc(10px + env(safe-area-inset-top, 0px));
+        padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+        overflow-x: hidden;
+        overflow-y: auto;
+        border-right: 1px solid var(--flor-border);
+        border-bottom: none;
     }
 
     .channel-list {
-        width: 100% !important;
-        max-height: 38vh;
+        flex: 1;
+        min-width: 0;
+        width: min(292px, calc(100vw - 72px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))) !important;
+        max-height: none !important;
+        height: 100%;
         border-right: none;
-        border-bottom: 1px solid var(--flor-border);
+        border-bottom: none;
     }
 
     .main-content {
         flex: 1;
         min-height: 0;
+        min-width: 0;
+        width: 100%;
+    }
+
+    .chat-header {
+        flex-wrap: wrap;
+        row-gap: 8px;
+        column-gap: 8px;
+        justify-content: flex-start;
+        align-items: center;
+        padding: 10px max(12px, env(safe-area-inset-right, 0px)) 10px max(12px, env(safe-area-inset-left, 0px));
+    }
+
+    .chat-header .channel-info {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .chat-controls {
+        flex: 1 1 auto;
+        min-width: 0;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .chat-search-input {
+        flex: 1 1 140px;
+        max-width: none;
+        min-width: 0;
+    }
+
+    .messages {
+        padding: 12px max(14px, env(safe-area-inset-left, 0px)) 16px max(14px, env(safe-area-inset-right, 0px));
+    }
+
+    .message-input-container {
+        padding: 12px max(14px, env(safe-area-inset-left, 0px)) calc(12px + env(safe-area-inset-bottom, 0px))
+            max(14px, env(safe-area-inset-right, 0px));
+    }
+
+    .friends-header {
+        flex-wrap: wrap;
+        height: auto;
+        min-height: 48px;
+        align-items: center;
+        padding: 8px max(12px, env(safe-area-inset-left, 0px)) 8px max(12px, env(safe-area-inset-right, 0px));
+        gap: 6px;
+    }
+
+    .friends-tabs {
+        flex: 1;
+        min-width: 0;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        gap: 4px;
+        padding-bottom: 2px;
+        scrollbar-width: none;
+    }
+
+    .friends-tabs::-webkit-scrollbar {
+        display: none;
+    }
+
+    .friends-tab {
+        flex-shrink: 0;
+        padding: 10px 14px;
+        min-height: 44px;
+        font-size: 15px;
+    }
+
+    .friends-list {
+        padding: max(12px, env(safe-area-inset-left, 0px)) max(14px, env(safe-area-inset-right, 0px)) 20px;
+    }
+
+    .friend-item {
+        flex-wrap: wrap;
+        row-gap: 10px;
+        padding: 14px;
+    }
+
+    .friend-actions {
+        flex: 1 1 100%;
+        justify-content: flex-end;
+        gap: 10px;
+    }
+
+    .friend-action-btn {
+        width: 44px;
+        height: 44px;
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    .dm-list-view {
+        padding: 8px max(6px, env(safe-area-inset-left, 0px)) 8px max(6px, env(safe-area-inset-right, 0px));
+    }
+
+    .dm-search-bar {
+        padding: 8px 4px 12px;
+    }
+
+    .dm-search-bar input {
+        font-size: 16px;
+        padding: 12px 14px;
+        border-radius: 14px;
+    }
+
+    .user-panel {
+        flex-wrap: wrap;
+        row-gap: 10px;
+        padding: 10px max(8px, env(safe-area-inset-left, 0px)) calc(10px + env(safe-area-inset-bottom, 0px))
+            max(8px, env(safe-area-inset-right, 0px));
+    }
+
+    .user-info {
+        max-width: none;
+        flex: 1 1 160px;
+    }
+
+    .user-controls {
+        flex: 1 1 auto;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+
+    #messageInput {
+        font-size: 16px;
+    }
+}
+
+@media (max-width: 768px) and (prefers-reduced-motion: reduce) {
+    .flor-sidebar-shell,
+    .flor-mobile-nav-backdrop {
+        transition: none;
     }
 }
 

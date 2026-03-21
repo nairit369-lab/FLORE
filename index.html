@@ -26,6 +26,8 @@
     <script src="crypto-e2e.js"></script>
 </head>
 <body>
+    <div class="flor-mobile-nav-backdrop" id="florMobileNavBackdrop" aria-hidden="true"></div>
+    <div class="flor-sidebar-shell" id="florSidebarShell">
     <!-- Server List (Left Sidebar) -->
     <div class="server-list">
         <div class="app-brand" title="FLOR MESSENGER">
@@ -99,12 +101,16 @@
             </div>
         </div>
     </div>
+    </div>
 
     <!-- Main Content Area -->
     <div class="main-content">
         <!-- Server/Channel Chat View -->
         <div id="chatView" class="chat-view" style="display: none;">
             <div class="chat-header">
+                <button type="button" class="flor-mobile-nav-btn icon-btn" id="florMobileNavBtnChat" aria-label="Меню: серверы и чаты" aria-expanded="false" title="Меню">
+                    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"/></svg>
+                </button>
                 <div class="channel-info" id="chatHeaderInfo">
                     <!-- Header will be dynamically populated -->
                 </div>
@@ -131,6 +137,9 @@
         <!-- Friends View (Main Content) -->
         <div id="friendsView" class="friends-main-view" style="display: none;">
             <div class="friends-header">
+                <button type="button" class="flor-mobile-nav-btn icon-btn" id="florMobileNavBtnFriends" aria-label="Меню: друзья и личные сообщения" aria-expanded="false" title="Меню">
+                    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"/></svg>
+                </button>
                 <div class="friends-tabs">
                     <button class="friends-tab active" data-tab="online">В сети</button>
                     <button class="friends-tab" data-tab="all">Все</button>
@@ -377,8 +386,8 @@
                     <section class="settings-panel-page" data-panel="devices">
                         <h3>Микрофон и наушники</h3>
                         <p id="florMediaHttpsWarning" class="settings-hint" style="display:none;color:#b45309;" role="alert">
-                            Браузер не даёт доступ к микрофону по обычному <strong>http://</strong> (кроме localhost).
-                            Подключите <strong>HTTPS</strong> на сервере и откройте сайт как <code>https://ваш-домен</code>.
+                            Браузер не даёт микрофон и часть аудио по обычному <strong>http://</strong> с IP (кроме localhost).
+                            На своём сервере включите HTTPS: в <code>.env</code> задайте <code>USE_HTTPS=true</code> и при доступе по IP — <code>FLOR_TLS_SAN</code> с этим IP (см. <code>.env.example</code>), затем откройте <code>https://…</code>.
                         </p>
                         <p class="settings-hint">Выбор устройства применится при следующем подключении к звонку. Проверка микрофона — ниже.</p>
                         <div class="form-group-settings">

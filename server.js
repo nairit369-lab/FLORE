@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const socketIO = require('socket.io');
 const path = require('path');
 const pkg = require('./package.json');
@@ -31,8 +32,71 @@ const {
     serverDB
 } = require('./database');
 
+/**
+ * HTTPS: либо SSL_KEY_PATH + SSL_CERT_PATH (Let's Encrypt и т.д.),
+ * либо USE_HTTPS=true — самоподписанный сертификат (для LAN: FLOR_TLS_SAN=localhost,127.0.0.1,192.168.x.x).
+ * Без этого микрофон/WebRTC/E2EE в браузере по http://IP не работают (нужен secure context).
+ */
+function createHttpServer(app) {
+    const keyPath = process.env.SSL_KEY_PATH;
+    const certPath = process.env.SSL_CERT_PATH;
+    if (keyPath && certPath) {
+        if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
+            console.error('[HTTPS] Не найдены файлы SSL_KEY_PATH или SSL_CERT_PATH');
+            process.exit(1);
+        }
+        return {
+            server: https.createServer({ key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) }, app),
+            useHttps: true
+        };
+    }
+    if (process.env.USE_HTTPS === '1' || process.env.USE_HTTPS === 'true') {
+        const selfsigned = require('selfsigned');
+        const sanRaw = process.env.FLOR_TLS_SAN || 'localhost,127.0.0.1';
+        const parts = sanRaw
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+        const altNames = [];
+        for (const entry of parts) {
+            if (/^\d{1,3}(\.\d{1,3}){3}$/.test(entry)) {
+                altNames.push({ type: 7, ip: entry });
+            } else {
+                altNames.push({ type: 2, value: entry });
+            }
+        }
+        const attrs = [{ name: 'commonName', value: 'flor-messenger' }];
+        const pems = selfsigned.generate(attrs, {
+            keySize: 2048,
+            days: 365,
+            algorithm: 'sha256',
+            extensions: [
+                {
+                    name: 'subjectAltName',
+                    altNames:
+                        altNames.length > 0
+                            ? altNames
+                            : [
+                                  { type: 2, value: 'localhost' },
+                                  { type: 7, ip: '127.0.0.1' }
+                              ]
+                }
+            ]
+        });
+        console.warn(
+            '[HTTPS] Самоподписанный сертификат. В браузере примите предупреждение безопасности.\n' +
+                '[HTTPS] Для доступа по IP в сети задайте в .env: FLOR_TLS_SAN=localhost,127.0.0.1,ВАШ_LAN_IP'
+        );
+        return {
+            server: https.createServer({ key: pems.private, cert: pems.cert }, app),
+            useHttps: true
+        };
+    }
+    return { server: http.createServer(app), useHttps: false };
+}
+
 const app = express();
-const server = http.createServer(app);
+const { server, useHttps } = createHttpServer(app);
 const corsOrigin = process.env.CORS_ORIGIN || true;
 const io = socketIO(server, {
     cors: {
@@ -1303,9 +1367,10 @@ async function startFlorServer() {
         server.listen(PORT, HOST, () => {
             server.removeListener('error', onErr);
             florServerListening = true;
-            const local = HOST === '0.0.0.0' ? `http://127.0.0.1:${PORT}` : `http://${HOST}:${PORT}`;
-            console.log(`FLOR MESSENGER listening on ${HOST}:${PORT}`);
-            console.log(`Open ${local}/ (или /login.html) в браузере`);
+            const proto = useHttps ? 'https' : 'http';
+            const local = HOST === '0.0.0.0' ? `${proto}://127.0.0.1:${PORT}` : `${proto}://${HOST}:${PORT}`;
+            console.log(`FLOR MESSENGER listening on ${HOST}:${PORT} (${proto.toUpperCase()})`);
+            console.log(`Open ${local}/login.html в браузере`);
             resolve();
         });
     });
@@ -1318,4 +1383,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { startFlorServer, app, server, io, PORT };
+module.exports = { startFlorServer, app, server, io, PORT, useHttps };

@@ -79,8 +79,11 @@ function florMediaNeedsSecurePage() {
 function florMediaAccessHint() {
     if (florMediaNeedsSecurePage()) {
         return (
-            'Микрофон и камера в браузере работают только по HTTPS (или на localhost).\n\n' +
-            'Откройте мессенджер как https://ваш-домен, а не http://IP:порт. На сервере: Nginx + Let’s Encrypt.'
+            'Микрофон и камера в этом браузере недоступны на обычном http:// с IP/доменом (нужен «безопасный» контекст).\n\n' +
+            'Варианты:\n' +
+            '• Сервер: в .env задайте USE_HTTPS=true и FLOR_TLS_SAN=… (см. .env.example), откройте https://…\n' +
+            '• Electron: в .env ELECTRON_INSECURE_ORIGINS=http://ВАШ_IP:порт (через запятую, если несколько)\n' +
+            '• Или Nginx + Let’s Encrypt для публичного домена.'
         );
     }
     return (
@@ -512,26 +515,127 @@ function saveMessengerSettings(patch) {
 }
 
 let florAudioCtx = null;
+let florPingAudio = null;
+let florPingDataUrlCache = null;
+
+function florEncodeWavMono16(sampleRate, int16Samples) {
+    const n = int16Samples.length;
+    const dataSize = n * 2;
+    const buf = new ArrayBuffer(44 + dataSize);
+    const dv = new DataView(buf);
+    let p = 0;
+    const w4 = (s) => {
+        for (let i = 0; i < 4; i++) dv.setUint8(p++, s.charCodeAt(i));
+    };
+    w4('RIFF');
+    dv.setUint32(p, 36 + dataSize, true);
+    p += 4;
+    w4('WAVE');
+    w4('fmt ');
+    dv.setUint32(p, 16, true);
+    p += 4;
+    dv.setUint16(p, 1, true);
+    p += 2;
+    dv.setUint16(p, 1, true);
+    p += 2;
+    dv.setUint32(p, sampleRate, true);
+    p += 4;
+    dv.setUint32(p, sampleRate * 2, true);
+    p += 4;
+    dv.setUint16(p, 2, true);
+    p += 2;
+    dv.setUint16(p, 16, true);
+    p += 2;
+    w4('data');
+    dv.setUint32(p, dataSize, true);
+    p += 4;
+    for (let i = 0; i < n; i++, p += 2) {
+        dv.setInt16(p, int16Samples[i], true);
+    }
+    const bytes = new Uint8Array(buf);
+    let binary = '';
+    const chunk = 8192;
+    for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + chunk, bytes.length)));
+    }
+    return `data:audio/wav;base64,${btoa(binary)}`;
+}
+
+function florGetPingDataUrl() {
+    if (!florPingDataUrlCache) {
+        const sr = 22050;
+        const n = Math.floor(sr * 0.085);
+        const f = 880;
+        const out = new Int16Array(n);
+        for (let i = 0; i < n; i++) {
+            const env = Math.sin((Math.PI * i) / Math.max(1, n - 1));
+            out[i] = Math.round(0.2 * 32767 * env * Math.sin((2 * Math.PI * f * i) / sr));
+        }
+        florPingDataUrlCache = florEncodeWavMono16(sr, out);
+    }
+    return florPingDataUrlCache;
+}
+
+function florTryPlayMediaElement(el) {
+    if (!el) return;
+    const pr = el.play();
+    if (pr && typeof pr.catch === 'function') pr.catch(() => {});
+}
+
+/** После первого касания/клавиши: звук уведомлений на http и удалённое аудио WebRTC без «тихого» видео */
+function florInitMediaPlaybackUnlock() {
+    if (window.florMediaPlaybackUnlockInit) return;
+    window.florMediaPlaybackUnlockInit = true;
+    const unlock = () => {
+        try {
+            if (florAudioCtx && florAudioCtx.state === 'suspended') florAudioCtx.resume().catch(() => {});
+        } catch (_) {}
+        try {
+            if (!florPingAudio) {
+                florPingAudio = new Audio(florGetPingDataUrl());
+                florPingAudio.preload = 'auto';
+                florPingAudio.volume = 0.14;
+            }
+            florPingAudio.play().then(() => {
+                florPingAudio.pause();
+                florPingAudio.currentTime = 0;
+            }).catch(() => {});
+        } catch (_) {}
+        document
+            .querySelectorAll(
+                '#remoteParticipants video, #callInterface video:not(#localVideo), #incomingCall video'
+            )
+            .forEach((v) => florTryPlayMediaElement(v));
+    };
+    document.addEventListener('pointerdown', unlock, { capture: true, passive: true });
+    document.addEventListener('keydown', unlock, { capture: true });
+}
 
 function playSoftPing() {
     try {
         const Ctx = window.AudioContext || window.webkitAudioContext;
-        if (!Ctx) return;
-        if (!florAudioCtx) florAudioCtx = new Ctx();
-        const ctx = florAudioCtx;
-        if (ctx.state === 'suspended') ctx.resume();
-        const o = ctx.createOscillator();
-        const g = ctx.createGain();
-        o.connect(g);
-        g.connect(ctx.destination);
-        o.frequency.value = 880;
-        g.gain.setValueAtTime(0.06, ctx.currentTime);
-        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
-        o.start(ctx.currentTime);
-        o.stop(ctx.currentTime + 0.14);
-    } catch (e) {
-        /* ignore */
-    }
+        if (Ctx && window.isSecureContext) {
+            if (!florAudioCtx) florAudioCtx = new Ctx();
+            const ctx = florAudioCtx;
+            if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.connect(g);
+            g.connect(ctx.destination);
+            o.frequency.value = 880;
+            g.gain.setValueAtTime(0.06, ctx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+            o.start(ctx.currentTime);
+            o.stop(ctx.currentTime + 0.14);
+            return;
+        }
+    } catch (_) {}
+    try {
+        if (florPingAudio) {
+            florPingAudio.currentTime = 0;
+            florPingAudio.play().catch(() => {});
+        }
+    } catch (_) {}
 }
 
 function applyCompactMessages() {
@@ -582,6 +686,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function initializeApp() {
+    florInitMediaPlaybackUnlock();
     updateUserInfo();
     initializeFriendsTabs();
     initializeChannels();
@@ -599,6 +704,7 @@ function initializeApp() {
     initializeHotkeys();
     initializeCallControls();
     initializeServerManagement();
+    initializeMobileNav();
     initializeFileUpload();
     initializeEmojiPicker();
     initializeDraggableCallWindow();
@@ -1458,6 +1564,60 @@ async function loadUserServers() {
     }
 }
 
+function initializeMobileNav() {
+    const shell = document.getElementById('florSidebarShell');
+    const backdrop = document.getElementById('florMobileNavBackdrop');
+    const mq = typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 768px)') : null;
+
+    function isMobileNavLayout() {
+        return mq ? mq.matches : window.innerWidth <= 768;
+    }
+
+    function syncMobileNavBackdropAria() {
+        if (!backdrop) return;
+        const open = document.body.classList.contains('flor-mobile-sidebar-open');
+        backdrop.setAttribute('aria-hidden', open && isMobileNavLayout() ? 'false' : 'true');
+    }
+
+    function setMobileSidebarOpen(open) {
+        document.body.classList.toggle('flor-mobile-sidebar-open', Boolean(open));
+        document.querySelectorAll('.flor-mobile-nav-btn').forEach((btn) => {
+            btn.setAttribute('aria-expanded', open && isMobileNavLayout() ? 'true' : 'false');
+        });
+        syncMobileNavBackdropAria();
+    }
+
+    function closeMobileSidebarIfMobile() {
+        if (isMobileNavLayout()) setMobileSidebarOpen(false);
+    }
+
+    function toggleSidebar() {
+        if (!isMobileNavLayout()) return;
+        setMobileSidebarOpen(!document.body.classList.contains('flor-mobile-sidebar-open'));
+    }
+
+    document.getElementById('florMobileNavBtnChat')?.addEventListener('click', toggleSidebar);
+    document.getElementById('florMobileNavBtnFriends')?.addEventListener('click', toggleSidebar);
+    backdrop?.addEventListener('click', () => setMobileSidebarOpen(false));
+
+    shell?.addEventListener('click', (e) => {
+        if (!isMobileNavLayout()) return;
+        if (e.target.closest('.server-icon')) closeMobileSidebarIfMobile();
+        if (e.target.closest('#dmList .channel, #channelsTreeRoot .channel')) closeMobileSidebarIfMobile();
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') setMobileSidebarOpen(false);
+    });
+
+    const onLayoutChange = () => {
+        if (!isMobileNavLayout()) setMobileSidebarOpen(false);
+        else syncMobileNavBackdropAria();
+    };
+    mq?.addEventListener('change', onLayoutChange);
+    window.addEventListener('orientationchange', () => setTimeout(onLayoutChange, 280));
+}
+
 function initializeServerManagement() {
     const friendsBtn = document.getElementById('friendsBtn');
     const addServerBtn = document.getElementById('addServerBtn');
@@ -2121,15 +2281,15 @@ async function populateAudioDeviceSelects() {
         outSel.innerHTML = '<option value="">—</option>';
         return;
     }
-    if (florMediaNeedsSecurePage()) {
-        inSel.innerHTML = '<option value="">Нужен HTTPS (не http://…)</option>';
-        outSel.innerHTML = '<option value="">Нужен HTTPS</option>';
-        return;
-    }
     try {
         await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-        /* нет разрешения или устройства */
+        if (florMediaNeedsSecurePage()) {
+            inSel.innerHTML = '<option value="">Нет доступа: https:// или USE_HTTPS / Electron (.env)</option>';
+            outSel.innerHTML = '<option value="">—</option>';
+            return;
+        }
+        /* нет разрешения или устройства — ниже попробуем enumerate */
     }
     const list = await navigator.mediaDevices.enumerateDevices();
     const s = getMessengerSettings();
@@ -2293,10 +2453,6 @@ function initializeSettingsHub() {
 
     document.getElementById('micTestStartBtn')?.addEventListener('click', async () => {
         stopMicTest();
-        if (florMediaNeedsSecurePage()) {
-            alert(florMediaAccessHint());
-            return;
-        }
         const s = getMessengerSettings();
         const audio = { echoCancellation: true };
         if (s.audioInputDeviceId) {
@@ -3297,6 +3453,8 @@ function createPeerConnection(remoteSocketId, isInitiator) {
             remoteVideo.id = `remote-${remoteSocketId}`;
             remoteVideo.autoplay = true;
             remoteVideo.playsInline = true;
+            remoteVideo.setAttribute('playsinline', '');
+            remoteVideo.setAttribute('webkit-playsinline', '');
             remoteVideo.volume = isDeafened ? 0 : 1; // Respect deafened state
             
             const participantName = document.createElement('div');
@@ -3314,15 +3472,13 @@ function createPeerConnection(remoteSocketId, isInitiator) {
             remoteVideo = document.getElementById(`remote-${remoteSocketId}`);
             if (remoteVideo) {
                 remoteVideo.srcObject = event.streams[0];
-                
-                // Ensure audio is playing
-                remoteVideo.play().catch(e => {
-                    console.error('Error playing remote video:', e);
-                    // Try to play after user interaction
-                    document.addEventListener('click', () => {
-                        remoteVideo.play().catch(err => console.error('Still cannot play:', err));
-                    }, { once: true });
-                });
+                florTryPlayMediaElement(remoteVideo);
+                const el = remoteVideo;
+                document.addEventListener(
+                    'pointerdown',
+                    () => florTryPlayMediaElement(el),
+                    { capture: true, once: true }
+                );
             }
         }
         
