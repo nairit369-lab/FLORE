@@ -67,6 +67,34 @@ function florApi(path) {
     return `${florOrigin()}${p}`;
 }
 
+/** Микрофон/камера: вне secure context (обычно http:// с чужого IP) getUserMedia недоступен */
+function florMediaNeedsSecurePage() {
+    try {
+        return typeof window !== 'undefined' && window.isSecureContext === false;
+    } catch (_) {
+        return true;
+    }
+}
+
+function florMediaAccessHint() {
+    if (florMediaNeedsSecurePage()) {
+        return (
+            'Микрофон и камера в браузере работают только по HTTPS (или на localhost).\n\n' +
+            'Откройте мессенджер как https://ваш-домен, а не http://IP:порт. На сервере: Nginx + Let’s Encrypt.'
+        );
+    }
+    return (
+        'Нет доступа к камере или микрофону.\n\n' +
+        'В адресной строке нажмите значок замка → разрешения сайта → микрофон/камера «Разрешить».'
+    );
+}
+
+function updateFlorMediaHttpsWarningEl() {
+    const el = document.getElementById('florMediaHttpsWarning');
+    if (!el) return;
+    el.style.display = florMediaNeedsSecurePage() ? 'block' : 'none';
+}
+
 async function florRefreshUserKeyCache() {
     try {
         const r = await fetch(florApi('/api/users'), { headers: { Authorization: `Bearer ${token}` } });
@@ -1189,7 +1217,7 @@ async function initiateCall(friendId, type) {
         
     } catch (error) {
         console.error('Error initiating call:', error);
-        alert('Нет доступа к камере или микрофону. Разрешите доступ в настройках браузера.');
+        alert(florMediaAccessHint());
     }
 }
 
@@ -1289,7 +1317,7 @@ async function acceptCall(caller, type) {
         
     } catch (error) {
         console.error('Error accepting call:', error);
-        alert('Нет доступа к камере или микрофону. Разрешите доступ в настройках браузера.');
+        alert(florMediaAccessHint());
     }
 }
 
@@ -2086,11 +2114,22 @@ function renderLoginHistoryList() {
 async function populateAudioDeviceSelects() {
     const inSel = document.getElementById('audioInputDevice');
     const outSel = document.getElementById('audioOutputDevice');
-    if (!inSel || !outSel || !navigator.mediaDevices?.enumerateDevices) return;
+    updateFlorMediaHttpsWarningEl();
+    if (!inSel || !outSel) return;
+    if (!navigator.mediaDevices?.enumerateDevices) {
+        inSel.innerHTML = '<option value="">API недоступен в этом браузере</option>';
+        outSel.innerHTML = '<option value="">—</option>';
+        return;
+    }
+    if (florMediaNeedsSecurePage()) {
+        inSel.innerHTML = '<option value="">Нужен HTTPS (не http://…)</option>';
+        outSel.innerHTML = '<option value="">Нужен HTTPS</option>';
+        return;
+    }
     try {
         await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-        /* ignore */
+        /* нет разрешения или устройства */
     }
     const list = await navigator.mediaDevices.enumerateDevices();
     const s = getMessengerSettings();
@@ -2222,7 +2261,9 @@ function initializeSettingsHub() {
         nav.addEventListener('click', (e) => {
             const btn = e.target.closest('.settings-nav-btn');
             if (!btn) return;
-            showPanel(btn.getAttribute('data-panel'));
+            const id = btn.getAttribute('data-panel');
+            showPanel(id);
+            if (id === 'devices') populateAudioDeviceSelects();
         });
     }
 
@@ -2252,6 +2293,10 @@ function initializeSettingsHub() {
 
     document.getElementById('micTestStartBtn')?.addEventListener('click', async () => {
         stopMicTest();
+        if (florMediaNeedsSecurePage()) {
+            alert(florMediaAccessHint());
+            return;
+        }
         const s = getMessengerSettings();
         const audio = { echoCancellation: true };
         if (s.audioInputDeviceId) {
@@ -2280,7 +2325,7 @@ function initializeSettingsHub() {
             document.getElementById('micTestStopBtn').hidden = false;
         } catch (err) {
             console.error(err);
-            alert('Не удалось получить доступ к микрофону');
+            alert(florMediaAccessHint());
         }
     });
     document.getElementById('micTestStopBtn')?.addEventListener('click', () => stopMicTest());
@@ -2795,7 +2840,7 @@ async function joinVoiceChannel(channelId, displayLabel) {
         }
     } catch (error) {
         console.error('Error initializing media:', error);
-        alert('Нет доступа к микрофону. Разрешите доступ в настройках браузера.');
+        alert(florMediaAccessHint());
         leaveVoiceChannel(true);
     }
 }
