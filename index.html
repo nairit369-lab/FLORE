@@ -26,6 +26,18 @@
     <script src="crypto-e2e.js"></script>
 </head>
 <body>
+    <div id="florSplash" class="flor-splash" aria-hidden="true">
+        <div class="flor-splash__inner">
+            <img src="assets/flor-logo.png" alt="" class="flor-splash__logo" width="88" height="88" />
+        </div>
+    </div>
+    <div id="userProfileOverlay" class="user-profile-overlay hidden" aria-hidden="true">
+        <div class="user-profile-overlay__backdrop" data-close-profile="1"></div>
+        <div class="user-profile-sheet" role="dialog" aria-modal="true" aria-labelledby="userProfileTitle">
+            <button type="button" class="user-profile-close" id="userProfileCloseBtn" aria-label="Закрыть">✕</button>
+            <div id="userProfileContent" class="user-profile-content"></div>
+        </div>
+    </div>
     <div class="flor-mobile-nav-backdrop" id="florMobileNavBackdrop" aria-hidden="true"></div>
     <div class="flor-sidebar-shell" id="florSidebarShell">
     <!-- Server List (Left Sidebar) -->
@@ -339,17 +351,32 @@
                 <div class="settings-panels flor-scroll">
                     <section class="settings-panel-page active" data-panel="profile">
                         <h3>Профиль</h3>
-                        <p class="settings-hint">Аватар сохраняется в аккаунте. Имя и описание ниже видите только вы в этом приложении.</p>
+                        <p class="settings-hint">Аватар и баннер сохраняются в аккаунте. Отображаемое имя внизу слева — только в этом браузере.</p>
+                        <div class="form-group-settings flor-profile-upload-row">
+                            <label>Фото профиля</label>
+                            <div class="flor-profile-upload-actions">
+                                <input type="file" id="settingsAvatarFile" accept="image/jpeg,image/png,image/gif,image/webp" class="visually-hidden" />
+                                <button type="button" class="settings-btn settings-btn--secondary" id="settingsAvatarPickBtn">Выбрать файл…</button>
+                                <span class="settings-hint" id="settingsAvatarFileHint">JPEG, PNG, GIF, WebP до 4 МБ</span>
+                            </div>
+                        </div>
+                        <div class="form-group-settings flor-profile-upload-row">
+                            <label>Баннер (фон карточки профиля)</label>
+                            <div class="flor-profile-upload-actions">
+                                <input type="file" id="settingsBannerFile" accept="image/jpeg,image/png,image/gif,image/webp" class="visually-hidden" />
+                                <button type="button" class="settings-btn settings-btn--secondary" id="settingsBannerPickBtn">Выбрать файл…</button>
+                            </div>
+                        </div>
                         <div class="form-group-settings">
                             <label for="settingsDisplayName">Как показывать имя внизу слева</label>
                             <input type="text" id="settingsDisplayName" maxlength="64" autocomplete="name" />
                         </div>
                         <div class="form-group-settings">
-                            <label for="settingsBio">О себе</label>
-                            <textarea id="settingsBio" rows="3" maxlength="280" placeholder="Коротко о себе…"></textarea>
+                            <label for="settingsBio">О себе (видят друзья в профиле)</label>
+                            <textarea id="settingsBio" rows="3" maxlength="500" placeholder="Коротко о себе…"></textarea>
                         </div>
                         <div class="form-group-settings">
-                            <label for="settingsAvatarInput">Значок в аватаре (до 4 символов)</label>
+                            <label for="settingsAvatarInput">Или буквы в аватаре (до 4 символов)</label>
                             <input type="text" id="settingsAvatarInput" maxlength="4" autocomplete="off" />
                         </div>
                     </section>

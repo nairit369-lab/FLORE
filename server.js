@@ -18,6 +18,8 @@ const {
     migrateChannelsForEmptyServers,
     ensureChannelSchema,
     ensureE2eeSchema,
+    ensureUserProfileSchema,
+    ensureDmReactionsSchema,
     migrateChannelHierarchy,
     getChannelTree,
     userDB,
@@ -28,6 +30,7 @@ const {
     channelKeyWrapDB,
     fileDB,
     reactionDB,
+    dmReactionDB,
     friendDB,
     serverDB
 } = require('./database');
@@ -286,6 +289,18 @@ const upload = multer({
     }
 });
 
+const profileImageUpload = multer({
+    storage,
+    limits: { fileSize: 4 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        if (/^image\/(jpeg|png|gif|webp)$/i.test(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Для аватара и баннера разрешены только JPEG, PNG, GIF, WebP'), false);
+        }
+    }
+});
+
 // Initialize database
 initializeDatabase();
 
@@ -309,6 +324,15 @@ function authenticateToken(req, res, next) {
         req.user = { ...decoded, id: uid };
         next();
     });
+}
+
+function normalizeAvatarForStorage(avatar) {
+    if (avatar === undefined) return undefined;
+    if (avatar === null) return null;
+    const s = String(avatar).trim();
+    if (!s) return null;
+    if (/^https?:\/\//i.test(s) || s.startsWith('/uploads/')) return s.slice(0, 512);
+    return s.slice(0, 4);
 }
 
 // API Routes
@@ -427,34 +451,119 @@ app.put('/api/user/identity-key', authenticateToken, async (req, res) => {
 
 app.patch('/api/user/profile', authenticateToken, async (req, res) => {
     try {
-        const { avatar } = req.body;
+        const { avatar, bio, profile_banner } = req.body || {};
         const userRow = await userDB.findById(req.user.id);
         if (!userRow) {
             return res.status(404).json({ error: 'Пользователь не найден' });
         }
-        let nextAvatar;
-        if (avatar === undefined || avatar === null) {
-            nextAvatar = null;
-        } else {
-            const t = String(avatar).trim().slice(0, 4);
-            nextAvatar = t || null;
+        const patch = {};
+        if (avatar !== undefined) {
+            patch.avatar = normalizeAvatarForStorage(avatar);
         }
-        if (nextAvatar === null) {
-            await userDB.updateAvatar(req.user.id, null);
-        } else {
-            await userDB.updateAvatar(req.user.id, nextAvatar);
+        if (bio !== undefined) {
+            const b = bio === null ? null : String(bio).trim().slice(0, 500);
+            patch.bio = b || null;
+        }
+        if (profile_banner !== undefined) {
+            const raw = profile_banner === null ? null : String(profile_banner).trim();
+            if (raw && !/^https?:\/\//i.test(raw) && !raw.startsWith('/uploads/')) {
+                return res.status(400).json({ error: 'Некорректный URL баннера' });
+            }
+            patch.profile_banner = raw ? raw.slice(0, 512) : null;
+        }
+        if (Object.keys(patch).length) {
+            await userDB.updateProfile(req.user.id, patch);
         }
         const user = await userDB.findById(req.user.id);
-        const displayAvatar = user.avatar || user.username.charAt(0).toUpperCase();
+        const displayAvatar =
+            user.avatar && String(user.avatar).trim()
+                ? user.avatar
+                : user.username.charAt(0).toUpperCase();
         res.json({
             id: user.id,
             username: user.username,
             email: user.email,
-            avatar: displayAvatar
+            avatar: displayAvatar,
+            bio: user.bio || '',
+            profile_banner: user.profile_banner || null
         });
     } catch (error) {
         console.error('Profile update error:', error);
         res.status(500).json({ error: 'Не удалось сохранить профиль' });
+    }
+});
+
+app.post(
+    '/api/user/profile-photo',
+    authenticateToken,
+    profileImageUpload.single('file'),
+    async (req, res) => {
+        try {
+            const kind = String((req.body && req.body.kind) || '').trim();
+            if (!req.file) {
+                return res.status(400).json({ error: 'Нет файла' });
+            }
+            if (kind !== 'avatar' && kind !== 'banner') {
+                return res.status(400).json({ error: 'Укажите kind: avatar или banner' });
+            }
+            await fileDB.create(
+                req.file.filename,
+                req.file.path,
+                req.file.mimetype,
+                req.file.size,
+                req.user.id,
+                null
+            );
+            const url = `/uploads/${req.file.filename}`;
+            if (kind === 'avatar') {
+                await userDB.updateProfile(req.user.id, { avatar: url });
+            } else {
+                await userDB.updateProfile(req.user.id, { profile_banner: url });
+            }
+            const user = await userDB.findById(req.user.id);
+            res.json({
+                url,
+                avatar:
+                    user.avatar && String(user.avatar).trim()
+                        ? user.avatar
+                        : user.username.charAt(0).toUpperCase(),
+                profile_banner: user.profile_banner || null
+            });
+        } catch (error) {
+            console.error('profile-photo:', error);
+            res.status(500).json({ error: 'Не удалось загрузить файл' });
+        }
+    }
+);
+
+app.get('/api/users/:userId/public', authenticateToken, async (req, res) => {
+    try {
+        const uid = parseInt(req.params.userId, 10);
+        if (Number.isNaN(uid)) {
+            return res.status(400).json({ error: 'Некорректный id' });
+        }
+        if (uid !== req.user.id) {
+            const okFriend = await friendDB.checkFriendship(req.user.id, uid);
+            if (!okFriend) {
+                return res.status(403).json({ error: 'Профиль доступен только друзьям' });
+            }
+        }
+        const u = await userDB.findById(uid);
+        if (!u) {
+            return res.status(404).json({ error: 'Пользователь не найден' });
+        }
+        res.json({
+            id: u.id,
+            username: u.username,
+            avatar:
+                u.avatar && String(u.avatar).trim() ? u.avatar : u.username.charAt(0).toUpperCase(),
+            bio: u.bio || '',
+            profile_banner: u.profile_banner || null,
+            status: u.status || 'Online'
+        });
+    } catch (error) {
+        console.error('public profile:', error);
+        res.status(500).json({ error: 'Ошибка сервера' });
     }
 });
 
@@ -550,6 +659,11 @@ app.get('/api/messages/:channelId', authenticateToken, async (req, res) => {
         }
         const cid = parseInt(req.params.channelId, 10);
         const messages = await messageDB.getByChannel(cid);
+        const ids = messages.map((m) => m.id);
+        const rmap = await reactionDB.getByMessageIds(ids);
+        messages.forEach((m) => {
+            m.reactions = rmap[m.id] || [];
+        });
         res.json(messages);
     } catch (error) {
         res.status(500).json({ error: 'Failed to get messages' });
@@ -573,6 +687,7 @@ app.post('/api/messages', authenticateToken, async (req, res) => {
         const savedMessage = await messageDB.create(text, req.user.id, channelId);
         const broadcastMessage = {
             id: savedMessage.id,
+            senderId: req.user.id,
             author: user.username,
             avatar: user.avatar || user.username.charAt(0).toUpperCase(),
             text,
@@ -606,6 +721,11 @@ app.get('/api/dm/:userId', authenticateToken, async (req, res) => {
             return res.status(403).json({ error: 'Личные сообщения доступны только друзьям' });
         }
         const messages = await dmDB.getConversation(req.user.id, other);
+        const dmIds = messages.map((m) => m.id);
+        const rmap = await dmReactionDB.getByDmMessageIds(dmIds);
+        messages.forEach((m) => {
+            m.reactions = rmap[m.id] || [];
+        });
         res.json(messages);
     } catch (error) {
         res.status(500).json({ error: 'Failed to get messages' });
@@ -966,6 +1086,14 @@ app.delete('/api/friends/:friendId', authenticateToken, async (req, res) => {
 const users = new Map();
 const rooms = new Map();
 
+function emitToUserSockets(userId, event, payload) {
+    for (const u of users.values()) {
+        if (Number(u.id) === Number(userId)) {
+            io.to(u.socketId).emit(event, payload);
+        }
+    }
+}
+
 // Socket.IO connection handling
 io.use((socket, next) => {
     const token = socket.handshake.auth.token;
@@ -1102,15 +1230,32 @@ io.on('connection', async (socket) => {
             if (Number.isNaN(messageId) || !emoji) return;
 
             const chId = await messageDB.getChannelIdForMessage(messageId);
-            if (chId == null) return;
+            if (chId != null) {
+                const access = await assertChannelMember(socket.userId, chId);
+                if (!access.ok) return;
 
-            const access = await assertChannelMember(socket.userId, chId);
-            if (!access.ok) return;
+                await reactionDB.add(emoji, messageId, socket.userId);
 
-            await reactionDB.add(emoji, messageId, socket.userId);
+                const reactions = await reactionDB.getByMessage(messageId);
+                io.to(`server-${access.channel.server_id}`).emit('reaction-update', {
+                    messageId,
+                    reactions,
+                    context: 'channel'
+                });
+                return;
+            }
 
-            const reactions = await reactionDB.getByMessage(messageId);
-            io.to(`server-${access.channel.server_id}`).emit('reaction-update', { messageId, reactions });
+            const dmRow = await dmDB.getById(messageId);
+            if (!dmRow) return;
+            if (dmRow.sender_id !== socket.userId && dmRow.receiver_id !== socket.userId) return;
+            const friendsOk = await friendDB.checkFriendship(dmRow.sender_id, dmRow.receiver_id);
+            if (!friendsOk) return;
+
+            await dmReactionDB.add(emoji, messageId, socket.userId);
+            const reactions = await dmReactionDB.getByDmMessage(messageId);
+            const payload = { messageId, reactions, context: 'dm' };
+            emitToUserSockets(dmRow.sender_id, 'reaction-update', payload);
+            emitToUserSockets(dmRow.receiver_id, 'reaction-update', payload);
         } catch (error) {
             console.error('Reaction error:', error);
         }
@@ -1123,15 +1268,32 @@ io.on('connection', async (socket) => {
             if (Number.isNaN(messageId) || !emoji) return;
 
             const chId = await messageDB.getChannelIdForMessage(messageId);
-            if (chId == null) return;
+            if (chId != null) {
+                const access = await assertChannelMember(socket.userId, chId);
+                if (!access.ok) return;
 
-            const access = await assertChannelMember(socket.userId, chId);
-            if (!access.ok) return;
+                await reactionDB.remove(emoji, messageId, socket.userId);
 
-            await reactionDB.remove(emoji, messageId, socket.userId);
+                const reactions = await reactionDB.getByMessage(messageId);
+                io.to(`server-${access.channel.server_id}`).emit('reaction-update', {
+                    messageId,
+                    reactions,
+                    context: 'channel'
+                });
+                return;
+            }
 
-            const reactions = await reactionDB.getByMessage(messageId);
-            io.to(`server-${access.channel.server_id}`).emit('reaction-update', { messageId, reactions });
+            const dmRow = await dmDB.getById(messageId);
+            if (!dmRow) return;
+            if (dmRow.sender_id !== socket.userId && dmRow.receiver_id !== socket.userId) return;
+            const friendsOk = await friendDB.checkFriendship(dmRow.sender_id, dmRow.receiver_id);
+            if (!friendsOk) return;
+
+            await dmReactionDB.remove(emoji, messageId, socket.userId);
+            const reactions = await dmReactionDB.getByDmMessage(messageId);
+            const payload = { messageId, reactions, context: 'dm' };
+            emitToUserSockets(dmRow.sender_id, 'reaction-update', payload);
+            emitToUserSockets(dmRow.receiver_id, 'reaction-update', payload);
         } catch (error) {
             console.error('Reaction error:', error);
         }
@@ -1337,7 +1499,8 @@ app.use(express.static(path.join(__dirname)));
 
 app.use((err, req, res, next) => {
     if (!err) return next();
-    if (String(err.message || '').includes('разрешён')) {
+    const msg = String(err.message || '');
+    if (msg.includes('разрешён') || msg.includes('JPEG') || msg.includes('WebP')) {
         return res.status(400).json({ error: err.message });
     }
     console.error(err);
@@ -1355,6 +1518,8 @@ async function startFlorServer() {
     try {
         await ensureChannelSchema();
         await ensureE2eeSchema();
+        await ensureUserProfileSchema();
+        await ensureDmReactionsSchema();
         await migrateChannelsForEmptyServers();
         await migrateChannelHierarchy();
     } catch (err) {

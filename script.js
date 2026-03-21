@@ -238,6 +238,46 @@ function escapeHtml(s) {
     return d.innerHTML;
 }
 
+function florIsAvatarImageUrl(s) {
+    if (!s || typeof s !== 'string') return false;
+    const t = s.trim();
+    return t.startsWith('/uploads/') || /^https?:\/\//i.test(t);
+}
+
+function florMediaUrl(pathOrUrl) {
+    if (!pathOrUrl) return '';
+    const t = String(pathOrUrl).trim();
+    if (/^https?:\/\//i.test(t)) return t;
+    if (t.startsWith('/')) return florApi(t);
+    return florApi('/' + t);
+}
+
+function florFillAvatarEl(el, avatar, username) {
+    if (!el) return;
+    el.textContent = '';
+    el.classList.remove('has-image');
+    const fallback = (username && String(username).charAt(0).toUpperCase()) || '?';
+    if (florIsAvatarImageUrl(avatar)) {
+        el.classList.add('has-image');
+        const img = document.createElement('img');
+        img.src = florMediaUrl(avatar);
+        img.alt = '';
+        img.loading = 'lazy';
+        el.appendChild(img);
+    } else {
+        const letter = (avatar && String(avatar).trim()) || fallback;
+        el.textContent = letter.slice(0, 4);
+    }
+}
+
+function florMessageReactionKey(ctx, messageId) {
+    return `${ctx}:${messageId}`;
+}
+
+function florEscapeSelector(s) {
+    return typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(s) : String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 function getMessengerSettings() {
     try {
         const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
@@ -691,6 +731,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function initializeApp() {
     florInitMediaPlaybackUnlock();
+    initializeFlorSplash();
+    initializeFlorUserProfileOverlay();
+    florRefreshUserProfileFromServer();
     updateUserInfo();
     initializeFriendsTabs();
     initializeChannels();
@@ -762,12 +805,182 @@ function updateUserInfo() {
     const username = document.querySelector('.username');
     const userStatus = document.querySelector('.user-status');
 
-    if (userAvatar) userAvatar.textContent = currentUser.avatar;
+    if (userAvatar) {
+        florFillAvatarEl(userAvatar, currentUser && currentUser.avatar, currentUser && currentUser.username);
+    }
     const disp = getMessengerSettings().displayName;
     if (username) username.textContent = (disp && disp.trim()) || currentUser.username;
     if (userStatus) {
         userStatus.textContent = getMessengerSettings().privacyHideOnline ? 'Невидимка' : 'В сети';
     }
+}
+
+function initializeFlorSplash() {
+    const sp = document.getElementById('florSplash');
+    if (!sp) return;
+    const t0 = Date.now();
+    const done = () => {
+        sp.classList.add('flor-splash--hide');
+        setTimeout(() => sp.remove(), 500);
+    };
+    const finish = () => {
+        const elapsed = Date.now() - t0;
+        const minMs = 650;
+        setTimeout(done, elapsed < minMs ? minMs - elapsed : 0);
+    };
+    const logo = sp.querySelector('.flor-splash__logo');
+    if (logo) {
+        logo.addEventListener('animationend', finish, { once: true });
+    }
+    setTimeout(finish, 2800);
+}
+
+function closeFlorUserProfile() {
+    const overlay = document.getElementById('userProfileOverlay');
+    if (!overlay) return;
+    overlay.classList.add('hidden');
+    overlay.setAttribute('aria-hidden', 'true');
+}
+
+async function openFlorUserProfile(userId) {
+    const uid = Number(userId);
+    if (!Number.isFinite(uid) || !token) return;
+    const overlay = document.getElementById('userProfileOverlay');
+    const content = document.getElementById('userProfileContent');
+    if (!overlay || !content) return;
+    content.textContent = '';
+    const loading = document.createElement('p');
+    loading.className = 'settings-hint';
+    loading.style.padding = '20px';
+    loading.textContent = 'Загрузка…';
+    content.appendChild(loading);
+    overlay.classList.remove('hidden');
+    overlay.setAttribute('aria-hidden', 'false');
+    try {
+        const r = await fetch(florApi(`/api/users/${uid}/public`), {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await r.json();
+        if (!r.ok) {
+            throw new Error(data.error || 'Не удалось открыть профиль');
+        }
+        content.innerHTML = '';
+        const card = document.createElement('div');
+        card.className = 'flor-profile-card';
+        const banner = document.createElement('div');
+        banner.className = 'flor-profile-card__banner';
+        if (data.profile_banner) {
+            banner.style.backgroundImage = `url(${JSON.stringify(florMediaUrl(data.profile_banner))})`;
+        }
+        const body = document.createElement('div');
+        body.className = 'flor-profile-card__body';
+        const avWrap = document.createElement('div');
+        avWrap.className = 'flor-profile-card__avatar';
+        if (florIsAvatarImageUrl(data.avatar)) {
+            const img = document.createElement('img');
+            img.src = florMediaUrl(data.avatar);
+            img.alt = '';
+            avWrap.appendChild(img);
+        } else {
+            avWrap.textContent =
+                (data.avatar && String(data.avatar).trim()) || data.username.charAt(0).toUpperCase();
+        }
+        const title = document.createElement('h3');
+        title.className = 'flor-profile-card__title';
+        title.id = 'userProfileTitle';
+        title.textContent = data.username;
+        const handle = document.createElement('div');
+        handle.className = 'flor-profile-card__handle';
+        handle.textContent = '@' + data.username;
+        const bio = document.createElement('div');
+        bio.className = 'flor-profile-card__bio';
+        if (data.bio && String(data.bio).trim()) {
+            bio.textContent = data.bio;
+        } else {
+            bio.classList.add('settings-hint');
+            bio.textContent = 'Нет описания';
+        }
+        const meta = document.createElement('div');
+        meta.className = 'flor-profile-card__meta';
+        meta.textContent = friendStatusLabel(data.status);
+        body.appendChild(avWrap);
+        body.appendChild(title);
+        body.appendChild(handle);
+        body.appendChild(bio);
+        body.appendChild(meta);
+        card.appendChild(banner);
+        card.appendChild(body);
+        content.appendChild(card);
+    } catch (e) {
+        content.innerHTML = '';
+        const p = document.createElement('p');
+        p.className = 'settings-hint';
+        p.style.padding = '20px';
+        p.textContent = e.message || 'Ошибка';
+        content.appendChild(p);
+    }
+}
+
+function initializeFlorUserProfileOverlay() {
+    const overlay = document.getElementById('userProfileOverlay');
+    const closeBtn = document.getElementById('userProfileCloseBtn');
+    if (!overlay) return;
+    closeBtn?.addEventListener('click', closeFlorUserProfile);
+    overlay.addEventListener('click', (e) => {
+        if (e.target.getAttribute('data-close-profile') === '1') {
+            closeFlorUserProfile();
+        }
+    });
+    const sheet = overlay.querySelector('.user-profile-sheet');
+    let sy = 0;
+    let armed = false;
+    sheet?.addEventListener(
+        'touchstart',
+        (e) => {
+            if (!e.touches || e.touches.length !== 1) return;
+            sy = e.touches[0].clientY;
+            armed = sheet.scrollTop <= 0;
+        },
+        { passive: true }
+    );
+    sheet?.addEventListener(
+        'touchend',
+        (e) => {
+            if (!armed || !e.changedTouches || e.changedTouches.length !== 1) return;
+            armed = false;
+            const dy = e.changedTouches[0].clientY - sy;
+            if (dy > 72) {
+                closeFlorUserProfile();
+            }
+        },
+        { passive: true }
+    );
+}
+
+async function florRefreshUserProfileFromServer() {
+    if (!token) return;
+    try {
+        const r = await fetch(florApi('/api/user/profile'), {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!r.ok) return;
+        const u = await r.json();
+        const av =
+            u.avatar && String(u.avatar).trim()
+                ? u.avatar
+                : (currentUser && currentUser.username && currentUser.username.charAt(0).toUpperCase()) || '?';
+        currentUser = {
+            ...currentUser,
+            id: u.id,
+            username: u.username,
+            email: u.email,
+            avatar: av,
+            bio: u.bio,
+            profile_banner: u.profile_banner
+        };
+        localStorage.setItem('currentUser', JSON.stringify(currentUser));
+        updateUserInfo();
+    } catch (_) {}
 }
 
 function connectToSocketIO() {
@@ -817,7 +1030,8 @@ function connectToSocketIO() {
             if (channelName === currentChannel && currentView === 'server') {
                 const mid = data.message && data.message.id;
                 const box = document.getElementById('messagesContainer');
-                if (mid != null && box && box.querySelector(`[data-message-id="${mid}"]`)) {
+                const fk = mid != null ? florMessageReactionKey('channel', mid) : null;
+                if (mid != null && box && box.querySelector(`[data-flor-msg-key="${florEscapeSelector(fk)}"]`)) {
                     return;
                 }
                 let msg = data.message;
@@ -825,6 +1039,10 @@ function connectToSocketIO() {
                     const text = await florDecryptChannelMessage(data.channelId, msg.text);
                     msg = { ...msg, text };
                 }
+                msg = {
+                    ...msg,
+                    userId: msg.senderId != null ? msg.senderId : msg.userId
+                };
                 addMessageToUI(msg);
                 scrollToBottom();
                 if (
@@ -845,7 +1063,7 @@ function connectToSocketIO() {
         });
         
         socket.on('reaction-update', (data) => {
-            updateMessageReactions(data.messageId, data.reactions);
+            updateMessageReactions(data.messageId, data.reactions, data.context);
         });
 
         // WebRTC Signaling
@@ -914,6 +1132,7 @@ function connectToSocketIO() {
                 addMessageToUI({
                     id: data.message.id,
                     senderId: data.message.senderId,
+                    userId: data.message.senderId,
                     author: data.message.author,
                     avatar: data.message.avatar,
                     text: t,
@@ -939,6 +1158,7 @@ function connectToSocketIO() {
                 addMessageToUI({
                     id: data.message.id,
                     senderId: data.senderId != null ? data.senderId : currentUser.id,
+                    userId: currentUser.id,
                     author: currentUser.username,
                     avatar: currentUser.avatar,
                     text: t,
@@ -1081,26 +1301,59 @@ function displayFriends(friends) {
 function createFriendItem(friend) {
     const div = document.createElement('div');
     div.className = 'friend-item';
-    
-    div.innerHTML = `
-        <div class="friend-avatar">${friend.avatar || friend.username.charAt(0).toUpperCase()}</div>
-        <div class="friend-info">
-            <div class="friend-name">${friend.username}</div>
-            <div class="friend-status ${friend.status === 'Online' ? '' : 'offline'}">${friendStatusLabel(friend.status)}</div>
-        </div>
-        <div class="friend-actions">
-            <button class="friend-action-btn message" title="Написать">💬</button>
-            <button class="friend-action-btn audio-call" title="Аудиозвонок">📞</button>
-            <button class="friend-action-btn video-call" title="Видеозвонок">📹</button>
-            <button class="friend-action-btn remove" title="Удалить из друзей">🗑️</button>
-        </div>
-    `;
 
-    div.querySelector('.message').addEventListener('click', () => startDM(friend.id, friend.username));
-    div.querySelector('.audio-call').addEventListener('click', () => initiateCall(friend.id, 'audio'));
-    div.querySelector('.video-call').addEventListener('click', () => initiateCall(friend.id, 'video'));
-    div.querySelector('.remove').addEventListener('click', () => removeFriend(friend.id));
-    
+    const av = document.createElement('div');
+    av.className = 'friend-avatar flor-click-profile';
+    florFillAvatarEl(av, friend.avatar, friend.username);
+    av.addEventListener('click', () => openFlorUserProfile(friend.id));
+
+    const info = document.createElement('div');
+    info.className = 'friend-info';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'friend-name flor-click-profile';
+    nameEl.textContent = friend.username;
+    nameEl.addEventListener('click', () => openFlorUserProfile(friend.id));
+    const st = document.createElement('div');
+    st.className = 'friend-status' + (friend.status === 'Online' ? '' : ' offline');
+    st.textContent = friendStatusLabel(friend.status);
+    info.appendChild(nameEl);
+    info.appendChild(st);
+
+    const actions = document.createElement('div');
+    actions.className = 'friend-actions';
+    const bMsg = document.createElement('button');
+    bMsg.type = 'button';
+    bMsg.className = 'friend-action-btn message';
+    bMsg.title = 'Написать';
+    bMsg.textContent = '💬';
+    bMsg.addEventListener('click', () => startDM(friend.id, friend.username));
+    const bAu = document.createElement('button');
+    bAu.type = 'button';
+    bAu.className = 'friend-action-btn audio-call';
+    bAu.title = 'Аудиозвонок';
+    bAu.textContent = '📞';
+    bAu.addEventListener('click', () => initiateCall(friend.id, 'audio'));
+    const bVi = document.createElement('button');
+    bVi.type = 'button';
+    bVi.className = 'friend-action-btn video-call';
+    bVi.title = 'Видеозвонок';
+    bVi.textContent = '📹';
+    bVi.addEventListener('click', () => initiateCall(friend.id, 'video'));
+    const bRm = document.createElement('button');
+    bRm.type = 'button';
+    bRm.className = 'friend-action-btn remove';
+    bRm.title = 'Удалить из друзей';
+    bRm.textContent = '🗑️';
+    bRm.addEventListener('click', () => removeFriend(friend.id));
+    actions.appendChild(bMsg);
+    actions.appendChild(bAu);
+    actions.appendChild(bVi);
+    actions.appendChild(bRm);
+
+    div.appendChild(av);
+    div.appendChild(info);
+    div.appendChild(actions);
+
     return div;
 }
 
@@ -1137,18 +1390,32 @@ function displaySearchResults(users) {
         return;
     }
     
-    users.forEach(user => {
+    users.forEach((user) => {
         const div = document.createElement('div');
         div.className = 'user-search-item';
-        
-        div.innerHTML = `
-            <div class="user-avatar">${user.avatar || user.username.charAt(0).toUpperCase()}</div>
-            <div class="user-info">
-                <div class="user-name">${user.username}</div>
-            </div>
-            <button class="add-friend-btn" onclick="sendFriendRequest(${user.id})">В друзья</button>
-        `;
-        
+
+        const av = document.createElement('div');
+        av.className = 'user-avatar flor-click-profile';
+        florFillAvatarEl(av, user.avatar, user.username);
+        av.addEventListener('click', () => openFlorUserProfile(user.id));
+
+        const info = document.createElement('div');
+        info.className = 'user-info';
+        const nm = document.createElement('div');
+        nm.className = 'user-name flor-click-profile';
+        nm.textContent = user.username;
+        nm.addEventListener('click', () => openFlorUserProfile(user.id));
+        info.appendChild(nm);
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'add-friend-btn';
+        btn.textContent = 'В друзья';
+        btn.addEventListener('click', () => sendFriendRequest(user.id));
+
+        div.appendChild(av);
+        div.appendChild(info);
+        div.appendChild(btn);
         resultsDiv.appendChild(div);
     });
 }
@@ -1643,7 +1910,10 @@ function initializeMobileTabbar() {
         window.florOpenMobileSidebar?.();
     });
     document.getElementById('florTabProfile')?.addEventListener('click', () => {
-        window.florOpenMobileSidebar?.();
+        window.florCloseMobileSidebar?.();
+        if (currentUser && currentUser.id != null) {
+            openFlorUserProfile(currentUser.id);
+        }
     });
     document.getElementById('florTabSettings')?.addEventListener('click', () => {
         document.getElementById('settingsBtn')?.click();
@@ -1688,12 +1958,15 @@ function initializeMobileSwipeNav() {
 
         const chatEl = document.getElementById('chatView');
         const friendsEl = document.getElementById('friendsView');
-        const chatOpen = chatEl && chatEl.style.display === 'flex';
-        const friendsOpen = friendsEl && friendsEl.style.display === 'flex';
+        const chatOpen = chatEl && (getComputedStyle(chatEl).display === 'flex' || getComputedStyle(chatEl).display === 'block');
+        const friendsOpen =
+            friendsEl &&
+            (getComputedStyle(friendsEl).display === 'flex' || getComputedStyle(friendsEl).display === 'block');
 
         if (chatOpen) {
             if (currentView === 'dm') {
                 showFriendsView();
+                switchFriendsTab('online');
             } else {
                 window.florOpenMobileSidebar?.();
             }
@@ -1869,7 +2142,8 @@ async function loadChannelMessages(channelName) {
                     author: message.username,
                     avatar: message.avatar || message.username.charAt(0).toUpperCase(),
                     text,
-                    timestamp: message.created_at
+                    timestamp: message.created_at,
+                    reactions: message.reactions
                 });
             }
         } else {
@@ -1880,7 +2154,8 @@ async function loadChannelMessages(channelName) {
                     author: message.username,
                     avatar: message.avatar || message.username.charAt(0).toUpperCase(),
                     text: message.content,
-                    timestamp: message.created_at
+                    timestamp: message.created_at,
+                    reactions: message.reactions
                 });
             });
         }
@@ -1910,7 +2185,8 @@ async function loadChannelMessages(channelName) {
                     author: message.username,
                     avatar: message.avatar || message.username.charAt(0).toUpperCase(),
                     text,
-                    timestamp: message.created_at
+                    timestamp: message.created_at,
+                    reactions: message.reactions
                 });
             }
             await idbPutChannelMessages(channelId, messages);
@@ -2032,8 +2308,14 @@ async function sendMessage() {
                     m = { ...m, text: await florE2ee.decryptWithChannelKey(raw, m.text) };
                 } catch (_) {}
             }
-            if (m && m.id != null && box && !box.querySelector(`[data-message-id="${m.id}"]`)) {
-                addMessageToUI(m);
+            const msgKey = m && m.id != null ? florMessageReactionKey('channel', m.id) : null;
+            if (
+                m &&
+                m.id != null &&
+                box &&
+                !box.querySelector(`[data-flor-msg-key="${florEscapeSelector(msgKey)}"]`)
+            ) {
+                addMessageToUI({ ...m, userId: m.senderId != null ? m.senderId : m.userId });
                 scrollToBottom();
             }
         } catch (e) {
@@ -2052,23 +2334,44 @@ function florMessageIsOwn(message) {
     return String(message.author || '') === String(currentUser.username || '');
 }
 
+function florRenderMessageReactions(container, messageId, reactions, msgCtx) {
+    if (!container) return;
+    container.innerHTML = '';
+    (reactions || []).forEach((reaction) => {
+        const reactionEl = document.createElement('div');
+        reactionEl.className = 'reaction';
+        reactionEl.innerHTML = `${reaction.emoji} <span>${reaction.count}</span>`;
+        reactionEl.title = reaction.users || '';
+        reactionEl.addEventListener('click', () => {
+            if (socket && socket.connected) {
+                socket.emit('remove-reaction', { messageId, emoji: reaction.emoji });
+            }
+        });
+        container.appendChild(reactionEl);
+    });
+}
+
 function addMessageToUI(message) {
     const messagesContainer = document.getElementById('messagesContainer');
     if (!messagesContainer) return;
+    const msgCtx = currentView === 'dm' ? 'dm' : 'channel';
     const mid = message && message.id;
-    if (mid != null && messagesContainer.querySelector(`[data-message-id="${mid}"]`)) {
+    const florKey = mid != null ? florMessageReactionKey(msgCtx, mid) : null;
+    if (florKey && messagesContainer.querySelector(`[data-flor-msg-key="${florEscapeSelector(florKey)}"]`)) {
         return;
     }
 
     const own = florMessageIsOwn(message);
+    const numericId = mid != null ? mid : Date.now();
 
     const messageGroup = document.createElement('div');
     messageGroup.className = 'message-group' + (own ? ' message-group--own' : '');
-    messageGroup.setAttribute('data-message-id', message.id || Date.now());
+    messageGroup.setAttribute('data-message-id', String(numericId));
+    messageGroup.setAttribute('data-flor-msg-key', florKey || `${msgCtx}:t${numericId}`);
 
     const avatar = document.createElement('div');
     avatar.className = 'message-avatar';
-    avatar.textContent = message.avatar;
+    florFillAvatarEl(avatar, message.avatar, message.author);
 
     const content = document.createElement('div');
     content.className = 'message-content';
@@ -2079,6 +2382,17 @@ function addMessageToUI(message) {
     const author = document.createElement('span');
     author.className = 'message-author';
     author.textContent = message.author;
+    const uid =
+        message.userId != null
+            ? Number(message.userId)
+            : message.senderId != null
+              ? Number(message.senderId)
+              : null;
+    if (!own && uid && currentUser && Number(uid) !== Number(currentUser.id)) {
+        author.classList.add('message-author--clickable');
+        author.title = 'Профиль';
+        author.addEventListener('click', () => openFlorUserProfile(uid));
+    }
 
     const timestamp = document.createElement('span');
     timestamp.className = 'message-timestamp';
@@ -2111,12 +2425,16 @@ function addMessageToUI(message) {
 
     const reactionsContainer = document.createElement('div');
     reactionsContainer.className = 'message-reactions';
+    if (message.reactions && message.reactions.length) {
+        florRenderMessageReactions(reactionsContainer, numericId, message.reactions, msgCtx);
+    }
 
     const addReactionBtn = document.createElement('button');
     addReactionBtn.className = 'add-reaction-btn';
     addReactionBtn.textContent = '😊';
     addReactionBtn.title = 'Добавить реакцию';
-    addReactionBtn.onclick = () => showEmojiPickerForMessage(message.id || Date.now());
+    addReactionBtn.type = 'button';
+    addReactionBtn.addEventListener('click', () => showEmojiPickerForMessage(numericId));
 
     if (!own) {
         header.appendChild(author);
@@ -2192,27 +2510,45 @@ function showEmojiPickerForMessage(messageId) {
 function createEmojiPicker(emojis, onSelect) {
     const picker = document.createElement('div');
     picker.className = 'emoji-picker';
-    
-    emojis.forEach(emoji => {
+
+    emojis.forEach((emoji) => {
         const btn = document.createElement('button');
+        btn.type = 'button';
         btn.className = 'emoji-option';
         btn.textContent = emoji;
-        btn.addEventListener('click', () => {
+        const pick = () => {
             onSelect(emoji);
             picker.remove();
+            document.removeEventListener('click', closePickerAnywhere);
+            document.removeEventListener('touchend', closePickerTouch, true);
+        };
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            pick();
         });
         picker.appendChild(btn);
     });
-    
+
+    function closePickerAnywhere(e) {
+        if (!picker.contains(e.target)) {
+            picker.remove();
+            document.removeEventListener('click', closePickerAnywhere);
+            document.removeEventListener('touchend', closePickerTouch, true);
+        }
+    }
+    function closePickerTouch(e) {
+        if (!picker.contains(e.target)) {
+            picker.remove();
+            document.removeEventListener('click', closePickerAnywhere);
+            document.removeEventListener('touchend', closePickerTouch, true);
+        }
+    }
+
     setTimeout(() => {
-        document.addEventListener('click', function closePickerAnywhere(e) {
-            if (!picker.contains(e.target)) {
-                picker.remove();
-                document.removeEventListener('click', closePickerAnywhere);
-            }
-        });
-    }, 100);
-    
+        document.addEventListener('click', closePickerAnywhere);
+        document.addEventListener('touchend', closePickerTouch, true);
+    }, 120);
+
     return picker;
 }
 
@@ -2222,24 +2558,14 @@ function addReaction(messageId, emoji) {
     }
 }
 
-function updateMessageReactions(messageId, reactions) {
-    const reactionsContainer = document.querySelector(`[data-message-id="${messageId}"] .message-reactions`);
+function updateMessageReactions(messageId, reactions, context) {
+    const ctx = context || (currentView === 'dm' ? 'dm' : 'channel');
+    const key = florMessageReactionKey(ctx, messageId);
+    const reactionsContainer = document.querySelector(
+        `[data-flor-msg-key="${florEscapeSelector(key)}"] .message-reactions`
+    );
     if (!reactionsContainer) return;
-    
-    reactionsContainer.innerHTML = '';
-    
-    reactions.forEach(reaction => {
-        const reactionEl = document.createElement('div');
-        reactionEl.className = 'reaction';
-        reactionEl.innerHTML = `${reaction.emoji} <span>${reaction.count}</span>`;
-        reactionEl.title = reaction.users;
-        reactionEl.addEventListener('click', () => {
-            if (socket && socket.connected) {
-                socket.emit('remove-reaction', { messageId, emoji: reaction.emoji });
-            }
-        });
-        reactionsContainer.appendChild(reactionEl);
-    });
+    florRenderMessageReactions(reactionsContainer, messageId, reactions, ctx);
 }
 
 // File upload
@@ -2304,8 +2630,9 @@ async function uploadFile(file) {
         }
         const box = document.getElementById('messagesContainer');
         const m = pdata.message;
-        if (m && m.id != null && box && !box.querySelector(`[data-message-id="${m.id}"]`)) {
-            addMessageToUI(m);
+        const fk = m && m.id != null ? florMessageReactionKey('channel', m.id) : null;
+        if (m && m.id != null && box && !box.querySelector(`[data-flor-msg-key="${florEscapeSelector(fk)}"]`)) {
+            addMessageToUI({ ...m, userId: m.senderId != null ? m.senderId : m.userId });
             scrollToBottom();
         }
     } catch (error) {
@@ -2475,7 +2802,16 @@ function initializeSettingsHub() {
         if (compactCb) compactCb.checked = s.compactMessages === true;
         const avatarInput = document.getElementById('settingsAvatarInput');
         if (avatarInput) {
-            avatarInput.value = currentUser && currentUser.avatar ? String(currentUser.avatar) : '';
+            if (currentUser && florIsAvatarImageUrl(currentUser.avatar)) {
+                avatarInput.placeholder = 'Фото загружено — введите до 4 букв или оставьте пустым';
+                avatarInput.value = '';
+            } else {
+                avatarInput.placeholder = '';
+                avatarInput.value =
+                    currentUser && currentUser.avatar && !florIsAvatarImageUrl(currentUser.avatar)
+                        ? String(currentUser.avatar).slice(0, 4)
+                        : '';
+            }
         }
         const dn = document.getElementById('settingsDisplayName');
         const bio = document.getElementById('settingsBio');
@@ -2516,6 +2852,27 @@ function initializeSettingsHub() {
         showPanel('profile');
         overlay.classList.remove('hidden');
         overlay.setAttribute('aria-hidden', 'false');
+
+        fetch(florApi('/api/user/profile'), { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((u) => {
+                if (!u) return;
+                const bioEl = document.getElementById('settingsBio');
+                if (bioEl && typeof u.bio === 'string') {
+                    bioEl.value = u.bio;
+                }
+                const ai = document.getElementById('settingsAvatarInput');
+                if (ai) {
+                    if (florIsAvatarImageUrl(u.avatar)) {
+                        ai.placeholder = 'Фото из файла';
+                        ai.value = '';
+                    } else {
+                        ai.placeholder = '';
+                        ai.value = (u.avatar && String(u.avatar).trim()) || '';
+                    }
+                }
+            })
+            .catch(() => {});
     }
 
     function closeSettings() {
@@ -2523,6 +2880,54 @@ function initializeSettingsHub() {
         overlay.setAttribute('aria-hidden', 'true');
         stopMicTest();
     }
+
+    async function uploadProfileKind(input, kind) {
+        const f = input.files && input.files[0];
+        if (!f) return;
+        const fd = new FormData();
+        fd.append('file', f);
+        fd.append('kind', kind);
+        const r = await fetch(florApi('/api/user/profile-photo'), {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+            body: fd
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            throw new Error(data.error || 'Ошибка загрузки');
+        }
+        if (data.avatar) {
+            currentUser.avatar = data.avatar;
+        }
+        if (data.profile_banner !== undefined) {
+            currentUser.profile_banner = data.profile_banner;
+        }
+        localStorage.setItem('currentUser', JSON.stringify(currentUser));
+        updateUserInfo();
+        input.value = '';
+        loadFriends();
+    }
+
+    document.getElementById('settingsAvatarPickBtn')?.addEventListener('click', () => {
+        document.getElementById('settingsAvatarFile')?.click();
+    });
+    document.getElementById('settingsBannerPickBtn')?.addEventListener('click', () => {
+        document.getElementById('settingsBannerFile')?.click();
+    });
+    document.getElementById('settingsAvatarFile')?.addEventListener('change', async (e) => {
+        try {
+            await uploadProfileKind(e.target, 'avatar');
+        } catch (err) {
+            alert(err.message || 'Не удалось загрузить');
+        }
+    });
+    document.getElementById('settingsBannerFile')?.addEventListener('change', async (e) => {
+        try {
+            await uploadProfileKind(e.target, 'banner');
+        } catch (err) {
+            alert(err.message || 'Не удалось загрузить');
+        }
+    });
 
     settingsBtn.addEventListener('click', openSettings);
     closeBtn.addEventListener('click', closeSettings);
@@ -2654,7 +3059,17 @@ function initializeSettingsHub() {
         applySidebarWidth();
         applyChatWallpaper();
         updateUserInfo();
-        const raw = avatarInput ? avatarInput.value.trim().slice(0, 4) : '';
+        const raw = avatarInput ? avatarInput.value.trim() : '';
+        const bioVal = document.getElementById('settingsBio')?.value?.trim() || '';
+        const patch = { bio: bioVal };
+        if (raw.length > 0 && raw.length <= 4) {
+            patch.avatar = raw;
+        } else if (raw.length > 4) {
+            alert('Текстовый аватар — не более 4 символов (или загрузите фото).');
+            return;
+        } else if (raw.length === 0 && !florIsAvatarImageUrl(currentUser && currentUser.avatar)) {
+            patch.avatar = null;
+        }
         try {
             const response = await fetch(florApi('/api/user/profile'), {
                 method: 'PATCH',
@@ -2662,19 +3077,25 @@ function initializeSettingsHub() {
                     'Content-Type': 'application/json',
                     Authorization: `Bearer ${token}`
                 },
-                body: JSON.stringify({ avatar: raw })
+                body: JSON.stringify(patch)
             });
             const data = await response.json();
             if (!response.ok) {
                 throw new Error(data.error || 'save failed');
             }
             currentUser.avatar = data.avatar;
+            if (data.profile_banner !== undefined) {
+                currentUser.profile_banner = data.profile_banner;
+            }
+            if (data.bio !== undefined) {
+                currentUser.bio = data.bio;
+            }
             localStorage.setItem('currentUser', JSON.stringify(currentUser));
             updateUserInfo();
             closeSettings();
         } catch (err) {
             console.error(err);
-            alert('Не удалось сохранить аватар на сервере; остальные настройки сохранены локально.');
+            alert('Не удалось сохранить профиль на сервере; остальные настройки сохранены локально.');
             closeSettings();
         }
     });
@@ -3436,7 +3857,8 @@ async function loadDMHistory(userId) {
                     author: message.username,
                     avatar: message.avatar || message.username.charAt(0).toUpperCase(),
                     text: txt,
-                    timestamp: message.created_at
+                    timestamp: message.created_at,
+                    reactions: message.reactions
                 });
             }
         } else {
@@ -3467,21 +3889,36 @@ function populateDMList(friends) {
        return;
    }
 
-   friends.forEach(friend => {
+   friends.forEach((friend) => {
        const dmItem = document.createElement('div');
        dmItem.className = 'channel flor-dm-row';
        dmItem.setAttribute('data-dm-id', friend.id);
-       const letter = friend.avatar || friend.username.charAt(0).toUpperCase();
-       dmItem.innerHTML = `
-           <div class="friend-avatar">${letter}</div>
-           <div class="flor-dm-row__main">
-               <div class="flor-dm-row__line1">
-                   <span class="flor-dm-row__name">${friend.username}</span>
-                   <span class="flor-dm-row__meta">ЛС</span>
-               </div>
-               <div class="flor-dm-row__preview">Написать сообщение</div>
-           </div>
-       `;
+       const av = document.createElement('div');
+       av.className = 'friend-avatar flor-click-profile';
+       florFillAvatarEl(av, friend.avatar, friend.username);
+       av.addEventListener('click', (e) => {
+           e.stopPropagation();
+           openFlorUserProfile(friend.id);
+       });
+       const main = document.createElement('div');
+       main.className = 'flor-dm-row__main';
+       const line1 = document.createElement('div');
+       line1.className = 'flor-dm-row__line1';
+       const nameSp = document.createElement('span');
+       nameSp.className = 'flor-dm-row__name';
+       nameSp.textContent = friend.username;
+       const meta = document.createElement('span');
+       meta.className = 'flor-dm-row__meta';
+       meta.textContent = 'ЛС';
+       line1.appendChild(nameSp);
+       line1.appendChild(meta);
+       const prev = document.createElement('div');
+       prev.className = 'flor-dm-row__preview';
+       prev.textContent = 'Написать сообщение';
+       main.appendChild(line1);
+       main.appendChild(prev);
+       dmItem.appendChild(av);
+       dmItem.appendChild(main);
        dmItem.addEventListener('click', () => {
            startDM(friend.id, friend.username);
        });

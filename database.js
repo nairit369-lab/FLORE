@@ -172,7 +172,7 @@ const userDB = {
         const t = String(username || '').trim();
         return new Promise((resolve, reject) => {
             const sql =
-                'SELECT id, username, email, avatar, status FROM users WHERE LOWER(username) = LOWER(?)';
+                'SELECT id, username, email, avatar, status, bio, profile_banner FROM users WHERE LOWER(username) = LOWER(?)';
             db.get(sql, [t], (err, row) => {
                 if (err) reject(err);
                 else resolve(row || null);
@@ -182,7 +182,8 @@ const userDB = {
 
     findById: (id) => {
         return new Promise((resolve, reject) => {
-            const sql = 'SELECT id, username, email, avatar, status FROM users WHERE id = ?';
+            const sql =
+                'SELECT id, username, email, avatar, status, bio, profile_banner FROM users WHERE id = ?';
             db.get(sql, [id], (err, row) => {
                 if (err) reject(err);
                 else resolve(row);
@@ -204,6 +205,34 @@ const userDB = {
         return new Promise((resolve, reject) => {
             const sql = 'UPDATE users SET avatar = ? WHERE id = ?';
             db.run(sql, [avatar, id], (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+    },
+
+    /** Частичное обновление полей профиля (avatar, bio, profile_banner) */
+    updateProfile: (id, patch) => {
+        const parts = [];
+        const vals = [];
+        if (patch.avatar !== undefined) {
+            parts.push('avatar = ?');
+            vals.push(patch.avatar);
+        }
+        if (patch.bio !== undefined) {
+            parts.push('bio = ?');
+            vals.push(patch.bio);
+        }
+        if (patch.profile_banner !== undefined) {
+            parts.push('profile_banner = ?');
+            vals.push(patch.profile_banner);
+        }
+        if (!parts.length) {
+            return Promise.resolve();
+        }
+        vals.push(id);
+        return new Promise((resolve, reject) => {
+            db.run(`UPDATE users SET ${parts.join(', ')} WHERE id = ?`, vals, (err) => {
                 if (err) reject(err);
                 else resolve();
             });
@@ -404,17 +433,26 @@ const dmDB = {
     getConversation: (userId1, userId2, limit = 50) => {
         return new Promise((resolve, reject) => {
             const sql = `
-                SELECT dm.*, u.username, u.avatar 
-                FROM direct_messages dm 
-                JOIN users u ON dm.sender_id = u.id 
-                WHERE (dm.sender_id = ? AND dm.receiver_id = ?) 
+                SELECT dm.*, u.username, u.avatar
+                FROM direct_messages dm
+                JOIN users u ON dm.sender_id = u.id
+                WHERE (dm.sender_id = ? AND dm.receiver_id = ?)
                    OR (dm.sender_id = ? AND dm.receiver_id = ?)
-                ORDER BY dm.created_at DESC 
+                ORDER BY dm.created_at DESC
                 LIMIT ?
             `;
             db.all(sql, [userId1, userId2, userId2, userId1, limit], (err, rows) => {
                 if (err) reject(err);
                 else resolve(rows.reverse());
+            });
+        });
+    },
+
+    getById: (id) => {
+        return new Promise((resolve, reject) => {
+            db.get('SELECT * FROM direct_messages WHERE id = ?', [id], (err, row) => {
+                if (err) reject(err);
+                else resolve(row || null);
             });
         });
     },
@@ -533,6 +571,108 @@ const reactionDB = {
             db.all(sql, [messageId], (err, rows) => {
                 if (err) reject(err);
                 else resolve(rows);
+            });
+        });
+    },
+
+    getByMessageIds: (messageIds) => {
+        return new Promise((resolve, reject) => {
+            const uniq = [...new Set((messageIds || []).map((x) => Number(x)).filter(Number.isFinite))];
+            if (!uniq.length) {
+                return resolve({});
+            }
+            const ph = uniq.map(() => '?').join(',');
+            const sql = `
+                SELECT r.message_id AS mid, r.emoji, COUNT(*) AS count, GROUP_CONCAT(u.username) AS users
+                FROM reactions r
+                JOIN users u ON r.user_id = u.id
+                WHERE r.message_id IN (${ph})
+                GROUP BY r.message_id, r.emoji
+            `;
+            db.all(sql, uniq, (err, rows) => {
+                if (err) return reject(err);
+                const map = {};
+                (rows || []).forEach((row) => {
+                    const mid = Number(row.mid);
+                    if (!map[mid]) map[mid] = [];
+                    map[mid].push({
+                        emoji: row.emoji,
+                        count: row.count,
+                        users: row.users
+                    });
+                });
+                resolve(map);
+            });
+        });
+    }
+};
+
+const dmReactionDB = {
+    add: (emoji, directMessageId, userId) => {
+        return new Promise((resolve, reject) => {
+            const sql =
+                'INSERT OR IGNORE INTO dm_reactions (emoji, direct_message_id, user_id) VALUES (?, ?, ?)';
+            db.run(sql, [emoji, directMessageId, userId], function (err) {
+                if (err) reject(err);
+                else resolve({ id: this.lastID, emoji, directMessageId, userId });
+            });
+        });
+    },
+
+    remove: (emoji, directMessageId, userId) => {
+        return new Promise((resolve, reject) => {
+            const sql =
+                'DELETE FROM dm_reactions WHERE emoji = ? AND direct_message_id = ? AND user_id = ?';
+            db.run(sql, [emoji, directMessageId, userId], (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+    },
+
+    getByDmMessage: (directMessageId) => {
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT r.emoji, COUNT(*) as count, GROUP_CONCAT(u.username) as users
+                FROM dm_reactions r
+                JOIN users u ON r.user_id = u.id
+                WHERE r.direct_message_id = ?
+                GROUP BY r.emoji
+            `;
+            db.all(sql, [directMessageId], (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
+    },
+
+    getByDmMessageIds: (dmIds) => {
+        return new Promise((resolve, reject) => {
+            const uniq = [...new Set((dmIds || []).map((x) => Number(x)).filter(Number.isFinite))];
+            if (!uniq.length) {
+                return resolve({});
+            }
+            const ph = uniq.map(() => '?').join(',');
+            const sql = `
+                SELECT r.direct_message_id AS mid, r.emoji, COUNT(*) AS count, GROUP_CONCAT(u.username) AS users
+                FROM dm_reactions r
+                JOIN users u ON r.user_id = u.id
+                WHERE r.direct_message_id IN (${ph})
+                GROUP BY r.direct_message_id, r.emoji
+            `;
+            db.all(sql, uniq, (err, rows) => {
+                if (err) return reject(err);
+                const map = {};
+                (rows || []).forEach((row) => {
+                    const mid = Number(row.mid);
+                    if (!map[mid]) map[mid] = [];
+                    map[mid].push({
+                        emoji: row.emoji,
+                        count: row.count,
+                        users: row.users
+                    });
+                });
+                resolve(map);
             });
         });
     }
@@ -767,6 +907,50 @@ function ensureE2eeSchema() {
     });
 }
 
+/** bio, profile_banner для карточки профиля */
+function ensureUserProfileSchema() {
+    return new Promise((resolve, reject) => {
+        db.all('PRAGMA table_info(users)', [], (err, cols) => {
+            if (err) return reject(err);
+            const names = new Set((cols || []).map((c) => c.name));
+            const addBanner = () => {
+                if (names.has('profile_banner')) return resolve();
+                db.run('ALTER TABLE users ADD COLUMN profile_banner TEXT', (e2) => {
+                    if (e2) return reject(e2);
+                    resolve();
+                });
+            };
+            if (names.has('bio')) return addBanner();
+            db.run('ALTER TABLE users ADD COLUMN bio TEXT', (e) => {
+                if (e) return reject(e);
+                names.add('bio');
+                addBanner();
+            });
+        });
+    });
+}
+
+function ensureDmReactionsSchema() {
+    return new Promise((resolve, reject) => {
+        db.run(
+            `CREATE TABLE IF NOT EXISTS dm_reactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                emoji TEXT NOT NULL,
+                direct_message_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (direct_message_id) REFERENCES direct_messages(id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(direct_message_id, user_id, emoji)
+            )`,
+            (err) => {
+                if (err) reject(err);
+                else resolve();
+            }
+        );
+    });
+}
+
 /** Создать таблицу категорий и колонки каналов на старых БД */
 function ensureChannelSchema() {
     return new Promise((resolve, reject) => {
@@ -933,6 +1117,8 @@ module.exports = {
     migrateChannelsForEmptyServers,
     ensureChannelSchema,
     ensureE2eeSchema,
+    ensureUserProfileSchema,
+    ensureDmReactionsSchema,
     migrateChannelHierarchy,
     getChannelTree,
     userDB,
@@ -943,6 +1129,7 @@ module.exports = {
     channelKeyWrapDB,
     fileDB,
     reactionDB,
+    dmReactionDB,
     friendDB,
     serverDB
 };
