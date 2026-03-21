@@ -243,7 +243,7 @@ function getMessengerSettings() {
         const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
         const s = raw ? JSON.parse(raw) : {};
         if (s.desktopNotifications === undefined) s.desktopNotifications = true;
-        if (s.soundInApp === undefined) s.soundInApp = true;
+        if (s.soundInApp === undefined) s.soundInApp = false;
         if (s.compactMessages === undefined) s.compactMessages = false;
         if (s.theme === undefined) s.theme = 'light';
         if (s.fontScale === undefined) s.fontScale = 100;
@@ -267,7 +267,7 @@ function getMessengerSettings() {
     } catch {
         return {
             desktopNotifications: true,
-            soundInApp: true,
+            soundInApp: false,
             compactMessages: false,
             theme: 'light',
             fontScale: 100,
@@ -596,10 +596,14 @@ function florInitMediaPlaybackUnlock() {
                 florPingAudio.preload = 'auto';
                 florPingAudio.volume = 0.14;
             }
+            florPingAudio.volume = 0;
             florPingAudio.play().then(() => {
                 florPingAudio.pause();
                 florPingAudio.currentTime = 0;
-            }).catch(() => {});
+                florPingAudio.volume = 0.14;
+            }).catch(() => {
+                florPingAudio.volume = 0.14;
+            });
         } catch (_) {}
         document
             .querySelectorAll(
@@ -705,6 +709,8 @@ function initializeApp() {
     initializeCallControls();
     initializeServerManagement();
     initializeMobileNav();
+    initializeMobileTabbar();
+    initializeMobileSwipeNav();
     initializeFileUpload();
     initializeEmojiPicker();
     initializeDraggableCallWindow();
@@ -822,7 +828,7 @@ function connectToSocketIO() {
                 addMessageToUI(msg);
                 scrollToBottom();
                 if (
-                    getMessengerSettings().soundInApp !== false &&
+                    getMessengerSettings().soundInApp === true &&
                     document.visibilityState === 'visible' &&
                     !isDoNotDisturbNow()
                 ) {
@@ -907,6 +913,7 @@ function connectToSocketIO() {
                 }
                 addMessageToUI({
                     id: data.message.id,
+                    senderId: data.message.senderId,
                     author: data.message.author,
                     avatar: data.message.avatar,
                     text: t,
@@ -914,7 +921,7 @@ function connectToSocketIO() {
                 });
                 scrollToBottom();
                 if (
-                    getMessengerSettings().soundInApp !== false &&
+                    getMessengerSettings().soundInApp === true &&
                     document.visibilityState === 'visible' &&
                     !isDoNotDisturbNow()
                 ) {
@@ -931,6 +938,7 @@ function connectToSocketIO() {
                 }
                 addMessageToUI({
                     id: data.message.id,
+                    senderId: data.senderId != null ? data.senderId : currentUser.id,
                     author: currentUser.username,
                     avatar: currentUser.avatar,
                     text: t,
@@ -1616,6 +1624,92 @@ function initializeMobileNav() {
     };
     mq?.addEventListener('change', onLayoutChange);
     window.addEventListener('orientationchange', () => setTimeout(onLayoutChange, 280));
+
+    window.florOpenMobileSidebar = () => {
+        if (isMobileNavLayout()) setMobileSidebarOpen(true);
+    };
+    window.florCloseMobileSidebar = () => setMobileSidebarOpen(false);
+}
+
+function initializeMobileTabbar() {
+    document.getElementById('florTabChats')?.addEventListener('click', () => {
+        window.florOpenMobileSidebar?.();
+    });
+    document.getElementById('florTabFriends')?.addEventListener('click', () => {
+        window.florCloseMobileSidebar?.();
+        showFriendsView();
+    });
+    document.getElementById('florTabCompose')?.addEventListener('click', () => {
+        window.florOpenMobileSidebar?.();
+    });
+    document.getElementById('florTabProfile')?.addEventListener('click', () => {
+        window.florOpenMobileSidebar?.();
+    });
+    document.getElementById('florTabSettings')?.addEventListener('click', () => {
+        document.getElementById('settingsBtn')?.click();
+    });
+}
+
+/**
+ * Мобильный жест «назад»: от левого края экрана свайп вправо.
+ * Открыта панель — закрыть; открыт чат ЛС — к друзьям; канал сервера — открыть список каналов; экран друзей — открыть панель чатов.
+ */
+function initializeMobileSwipeNav() {
+    const edgePx = 40;
+    const thresholdPx = 90;
+    let startX = 0;
+    let startY = 0;
+    let armed = false;
+
+    function onTouchStart(e) {
+        if (window.innerWidth > 768) return;
+        if (!e.touches || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        startX = t.clientX;
+        startY = t.clientY;
+        armed = startX <= edgePx;
+    }
+
+    function onTouchEnd(e) {
+        if (!armed) return;
+        armed = false;
+        if (window.innerWidth > 768) return;
+        if (!e.changedTouches || e.changedTouches.length !== 1) return;
+        const t = e.changedTouches[0];
+        const dx = t.clientX - startX;
+        const dy = t.clientY - startY;
+        if (dx < thresholdPx) return;
+        if (Math.abs(dy) > Math.abs(dx) * 0.92) return;
+
+        if (document.body.classList.contains('flor-mobile-sidebar-open')) {
+            window.florCloseMobileSidebar?.();
+            return;
+        }
+
+        const chatEl = document.getElementById('chatView');
+        const friendsEl = document.getElementById('friendsView');
+        const chatOpen = chatEl && chatEl.style.display === 'flex';
+        const friendsOpen = friendsEl && friendsEl.style.display === 'flex';
+
+        if (chatOpen) {
+            if (currentView === 'dm') {
+                showFriendsView();
+            } else {
+                window.florOpenMobileSidebar?.();
+            }
+            return;
+        }
+        if (friendsOpen) {
+            window.florOpenMobileSidebar?.();
+        }
+    }
+
+    document.getElementById('chatView')?.addEventListener('touchstart', onTouchStart, { passive: true });
+    document.getElementById('chatView')?.addEventListener('touchend', onTouchEnd, { passive: true });
+    document.getElementById('friendsView')?.addEventListener('touchstart', onTouchStart, { passive: true });
+    document.getElementById('friendsView')?.addEventListener('touchend', onTouchEnd, { passive: true });
+    document.getElementById('florSidebarShell')?.addEventListener('touchstart', onTouchStart, { passive: true });
+    document.getElementById('florSidebarShell')?.addEventListener('touchend', onTouchEnd, { passive: true });
 }
 
 function initializeServerManagement() {
@@ -1771,6 +1865,7 @@ async function loadChannelMessages(channelName) {
                 const text = await florDecryptChannelMessage(channelId, message.content);
                 addMessageToUI({
                     id: message.id,
+                    userId: message.user_id,
                     author: message.username,
                     avatar: message.avatar || message.username.charAt(0).toUpperCase(),
                     text,
@@ -1781,6 +1876,7 @@ async function loadChannelMessages(channelName) {
             cached.forEach((message) => {
                 addMessageToUI({
                     id: message.id,
+                    userId: message.user_id,
                     author: message.username,
                     avatar: message.avatar || message.username.charAt(0).toUpperCase(),
                     text: message.content,
@@ -1810,6 +1906,7 @@ async function loadChannelMessages(channelName) {
                         : message.content;
                 addMessageToUI({
                     id: message.id,
+                    userId: message.user_id,
                     author: message.username,
                     avatar: message.avatar || message.username.charAt(0).toUpperCase(),
                     text,
@@ -1948,6 +2045,13 @@ async function sendMessage() {
     alert('Откройте чат: сервер с текстовым каналом или личные сообщения.');
 }
 
+function florMessageIsOwn(message) {
+    if (!currentUser) return false;
+    if (message.senderId != null && Number(message.senderId) === Number(currentUser.id)) return true;
+    if (message.userId != null && Number(message.userId) === Number(currentUser.id)) return true;
+    return String(message.author || '') === String(currentUser.username || '');
+}
+
 function addMessageToUI(message) {
     const messagesContainer = document.getElementById('messagesContainer');
     if (!messagesContainer) return;
@@ -1956,24 +2060,26 @@ function addMessageToUI(message) {
         return;
     }
 
+    const own = florMessageIsOwn(message);
+
     const messageGroup = document.createElement('div');
-    messageGroup.className = 'message-group';
+    messageGroup.className = 'message-group' + (own ? ' message-group--own' : '');
     messageGroup.setAttribute('data-message-id', message.id || Date.now());
-    
+
     const avatar = document.createElement('div');
     avatar.className = 'message-avatar';
     avatar.textContent = message.avatar;
-    
+
     const content = document.createElement('div');
     content.className = 'message-content';
-    
+
     const header = document.createElement('div');
     header.className = 'message-header';
-    
+
     const author = document.createElement('span');
     author.className = 'message-author';
     author.textContent = message.author;
-    
+
     const timestamp = document.createElement('span');
     timestamp.className = 'message-timestamp';
     timestamp.textContent = formatTimestamp(message.timestamp);
@@ -1998,31 +2104,38 @@ function addMessageToUI(message) {
         bookmarkBtn.textContent = added ? '★' : '☆';
         bookmarkBtn.classList.toggle('is-bookmarked', added);
     });
-    
+
     const text = document.createElement('div');
     text.className = 'message-text';
     text.appendChild(linkifyToFragment(message.text));
-    
+
     const reactionsContainer = document.createElement('div');
     reactionsContainer.className = 'message-reactions';
-    
+
     const addReactionBtn = document.createElement('button');
     addReactionBtn.className = 'add-reaction-btn';
     addReactionBtn.textContent = '😊';
     addReactionBtn.title = 'Добавить реакцию';
     addReactionBtn.onclick = () => showEmojiPickerForMessage(message.id || Date.now());
-    
-    header.appendChild(author);
+
+    if (!own) {
+        header.appendChild(author);
+    }
     header.appendChild(timestamp);
     header.appendChild(bookmarkBtn);
     content.appendChild(header);
     content.appendChild(text);
     content.appendChild(reactionsContainer);
     content.appendChild(addReactionBtn);
-    
-    messageGroup.appendChild(avatar);
-    messageGroup.appendChild(content);
-    
+
+    if (own) {
+        messageGroup.appendChild(content);
+        messageGroup.appendChild(avatar);
+    } else {
+        messageGroup.appendChild(avatar);
+        messageGroup.appendChild(content);
+    }
+
     messagesContainer.appendChild(messageGroup);
 }
 
@@ -2358,7 +2471,7 @@ function initializeSettingsHub() {
         const soundCb = document.getElementById('settingsSoundInApp');
         const compactCb = document.getElementById('settingsCompactMessages');
         if (notifyCb) notifyCb.checked = s.desktopNotifications !== false;
-        if (soundCb) soundCb.checked = s.soundInApp !== false;
+        if (soundCb) soundCb.checked = s.soundInApp === true;
         if (compactCb) compactCb.checked = s.compactMessages === true;
         const avatarInput = document.getElementById('settingsAvatarInput');
         if (avatarInput) {
@@ -2517,7 +2630,7 @@ function initializeSettingsHub() {
         const avatarInput = document.getElementById('settingsAvatarInput');
         saveMessengerSettings({
             desktopNotifications: notifyCb ? notifyCb.checked : true,
-            soundInApp: soundCb ? soundCb.checked : true,
+            soundInApp: soundCb ? soundCb.checked : false,
             compactMessages: compactCb ? compactCb.checked : false,
             displayName: document.getElementById('settingsDisplayName')?.value?.trim() || '',
             bio: document.getElementById('settingsBio')?.value?.trim() || '',
@@ -3318,6 +3431,8 @@ async function loadDMHistory(userId) {
                 }
                 addMessageToUI({
                     id: message.id,
+                    senderId: message.sender_id,
+                    userId: message.sender_id,
                     author: message.username,
                     avatar: message.avatar || message.username.charAt(0).toUpperCase(),
                     text: txt,
@@ -3354,11 +3469,18 @@ function populateDMList(friends) {
 
    friends.forEach(friend => {
        const dmItem = document.createElement('div');
-       dmItem.className = 'channel';
+       dmItem.className = 'channel flor-dm-row';
        dmItem.setAttribute('data-dm-id', friend.id);
+       const letter = friend.avatar || friend.username.charAt(0).toUpperCase();
        dmItem.innerHTML = `
-           <div class="friend-avatar">${friend.avatar || friend.username.charAt(0).toUpperCase()}</div>
-           <span>${friend.username}</span>
+           <div class="friend-avatar">${letter}</div>
+           <div class="flor-dm-row__main">
+               <div class="flor-dm-row__line1">
+                   <span class="flor-dm-row__name">${friend.username}</span>
+                   <span class="flor-dm-row__meta">ЛС</span>
+               </div>
+               <div class="flor-dm-row__preview">Написать сообщение</div>
+           </div>
        `;
        dmItem.addEventListener('click', () => {
            startDM(friend.id, friend.username);

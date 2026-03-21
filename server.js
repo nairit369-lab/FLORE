@@ -1034,6 +1034,7 @@ io.on('connection', async (socket) => {
 
             const broadcastMessage = {
                 id: savedMessage.id,
+                senderId: socket.userId,
                 author: user.username,
                 avatar: user.avatar || user.username.charAt(0).toUpperCase(),
                 text,
@@ -1068,6 +1069,7 @@ io.on('connection', async (socket) => {
 
             const messagePayload = {
                 id: savedMessage.id,
+                senderId: socket.userId,
                 author: sender.username,
                 avatar: sender.avatar || sender.username.charAt(0).toUpperCase(),
                 text,
@@ -1085,6 +1087,7 @@ io.on('connection', async (socket) => {
 
             socket.emit('dm-sent', {
                 receiverId,
+                senderId: socket.userId,
                 message: messagePayload
             });
         } catch (error) {
