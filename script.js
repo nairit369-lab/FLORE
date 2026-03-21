@@ -588,6 +588,13 @@ function initializeApp() {
                     await florRefreshUserKeyCache();
                     return florUserKeyCache.get(userId) || null;
                 });
+                if (
+                    typeof window.florE2ee.isActive === 'function' &&
+                    !window.florE2ee.isActive() &&
+                    window.florE2ee.httpsHint
+                ) {
+                    console.warn('[FLOR]', window.florE2ee.httpsHint);
+                }
             }
         } catch (e) {
             console.error('E2EE init:', e);

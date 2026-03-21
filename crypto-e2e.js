@@ -7,6 +7,17 @@
     const PRIV_STORAGE = 'florE2ee_identity_private_jwk_v1';
     const CH_KEY_PREFIX = 'florE2ee_ch_';
 
+    /** Без HTTPS (и не localhost) Chrome/Firefox не дают Web Crypto → ключи E2EE невозможны */
+    function isWebCryptoE2eeAvailable() {
+        try {
+            if (typeof crypto === 'undefined' || !crypto.subtle) return false;
+            if (typeof window !== 'undefined' && window.isSecureContext === false) return false;
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     function bytesToB64(bytes) {
         let bin = '';
         bytes.forEach((b) => {
@@ -144,7 +155,9 @@
         const peerJwk = await getPeerJwk(peerId);
         if (!peerJwk) {
             throw new Error(
-                'У собеседника нет ключа шифрования. Пусть откроет мессенджер после обновления (ключ создаётся при входе).'
+                'Нет ключа шифрования у собеседника. ' +
+                    'Если сайт открыт по http:// без SSL, браузер не создаёт ключи — подключите HTTPS (Nginx + Let\'s Encrypt). ' +
+                    'Если уже HTTPS — пусть собеседник откроет мессенджер и нажмёт Ctrl+F5.'
             );
         }
         const myPriv = await getMyPrivateCryptoKey();
@@ -282,8 +295,50 @@
         });
     }
 
+    if (!isWebCryptoE2eeAvailable()) {
+        window.florE2ee = {
+            isE2eePayload,
+            isActive() {
+                return false;
+            },
+            httpsHint:
+                'Шифрование в браузере доступно только по HTTPS (или localhost). Подключите сертификат на сервере — сообщения по HTTP идут без E2EE.',
+            async init(_florApi, _token, getPeerJwkFn) {
+                if (typeof getPeerJwkFn === 'function') cachedGetPeerJwk = getPeerJwkFn;
+            },
+            setPeerKeyResolver(fn) {
+                cachedGetPeerJwk = fn;
+            },
+            async encryptDmPlaintext(_peerId, text) {
+                return text;
+            },
+            async decryptDmPayload(cipherJson) {
+                return isE2eePayload(cipherJson)
+                    ? '🔒 Сообщение зашифровано. Откройте мессенджер по HTTPS (SSL), чтобы прочитать.'
+                    : cipherJson;
+            },
+            async ensureChannelKey() {
+                return null;
+            },
+            async redistributeMissingWraps() {},
+            async encryptWithChannelKey(_raw, text) {
+                return text;
+            },
+            async decryptWithChannelKey(_raw, cipherJson) {
+                return isE2eePayload(cipherJson)
+                    ? '🔒 Зашифровано. Нужен HTTPS.'
+                    : cipherJson;
+            }
+        };
+        return;
+    }
+
     window.florE2ee = {
         isE2eePayload,
+        isActive() {
+            return true;
+        },
+        httpsHint: '',
         async init(florApi, token, getPeerJwkFn) {
             cachedGetPeerJwk = getPeerJwkFn;
             await uploadPublicKey(florApi, token);
