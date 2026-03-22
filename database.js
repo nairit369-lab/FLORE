@@ -249,12 +249,34 @@ const userDB = {
         });
     },
 
+    /** Добавляет ключ устройства к списку, не затирая ключи с других браузеров/ПК */
     setIdentityPublicJwk: (userId, jwkJson) => {
-        const s = typeof jwkJson === 'string' ? jwkJson : JSON.stringify(jwkJson);
+        const jwk = typeof jwkJson === 'string' ? JSON.parse(jwkJson) : jwkJson;
         return new Promise((resolve, reject) => {
-            db.run('UPDATE users SET identity_public_jwk = ? WHERE id = ?', [s, userId], function (err) {
-                if (err) reject(err);
-                else resolve({ changes: this.changes });
+            db.get('SELECT identity_public_jwk FROM users WHERE id = ?', [userId], (err, row) => {
+                if (err) return reject(err);
+                let arr = [];
+                try {
+                    if (row && row.identity_public_jwk) {
+                        const p = JSON.parse(row.identity_public_jwk);
+                        if (Array.isArray(p)) {
+                            arr = p.filter((x) => x && x.kty === 'EC');
+                        } else if (p && p.kty === 'EC') {
+                            arr = [p];
+                        }
+                    }
+                } catch (_) {
+                    arr = [];
+                }
+                const x = jwk && jwk.x;
+                const y = jwk && jwk.y;
+                const exists = arr.some((j) => j && j.x === x && j.y === y);
+                if (!exists) arr.push(jwk);
+                const s = JSON.stringify(arr);
+                db.run('UPDATE users SET identity_public_jwk = ? WHERE id = ?', [s, userId], function (e2) {
+                    if (e2) reject(e2);
+                    else resolve({ changes: this.changes });
+                });
             });
         });
     },

@@ -39,7 +39,11 @@
         if (!t.startsWith('{')) return false;
         try {
             const o = JSON.parse(t);
-            return !!(o && Number(o.florE2ee) === 1 && o.iv && o.ct);
+            if (!o) return false;
+            const v = Number(o.florE2ee);
+            if (v === 1 && o.iv && o.ct) return true;
+            if (v === 2 && o.iv && o.ct && Array.isArray(o.wraps) && o.wraps.length > 0) return true;
+            return false;
         } catch (_) {
             return false;
         }
@@ -127,7 +131,7 @@
         return pub;
     }
 
-    let cachedGetPeerJwk = null;
+    let cachedGetPeerJwks = null;
 
     async function getMyPrivateCryptoKey() {
         const privJwk = await getOrCreateIdentityPrivateJwk();
@@ -151,9 +155,13 @@
         }
     }
 
-    async function encryptDmPlaintextImpl(peerId, text, getPeerJwk) {
-        const peerJwk = await getPeerJwk(peerId);
-        if (!peerJwk) {
+    async function encryptDmPlaintextImpl(peerId, text, getPeerJwks) {
+        if (typeof getPeerJwks !== 'function') {
+            throw new Error('Внутренняя ошибка: нет резолвера ключей собеседника');
+        }
+        const peerJwks = await getPeerJwks(peerId);
+        const list = Array.isArray(peerJwks) ? peerJwks.filter(Boolean) : peerJwks ? [peerJwks] : [];
+        if (!list.length) {
             throw new Error(
                 'Нет ключа шифрования у собеседника. ' +
                     'Если сайт открыт по http:// без SSL, браузер не создаёт ключи — подключите HTTPS (Nginx + Let\'s Encrypt). ' +
@@ -161,28 +169,80 @@
             );
         }
         const myPriv = await getMyPrivateCryptoKey();
-        const peerPub = await importPublicJwk(peerJwk);
-        const aes = await deriveAesGcm256(myPriv, peerPub);
-        const { iv, ct } = await aesGcmEncryptUtf8(aes, text);
-        return JSON.stringify({ florE2ee: 1, iv, ct });
+        const sessionRaw = crypto.getRandomValues(new Uint8Array(32));
+        const sessionKey = await crypto.subtle.importKey('raw', sessionRaw, 'AES-GCM', false, ['encrypt']);
+        const enc = new TextEncoder();
+        const ivMsg = crypto.getRandomValues(new Uint8Array(12));
+        const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: ivMsg }, sessionKey, enc.encode(text));
+        const wraps = [];
+        for (const pj of list) {
+            const peerPub = await importPublicJwk(pj);
+            const aes = await deriveAesGcm256(myPriv, peerPub);
+            wraps.push(await encryptRawKeyWithAes(aes, sessionRaw));
+        }
+        return JSON.stringify({
+            florE2ee: 2,
+            iv: bytesToB64(ivMsg),
+            ct: bytesToB64(new Uint8Array(ctBuf)),
+            wraps
+        });
     }
 
-    async function decryptDmPayloadImpl(cipherJson, peerId, getPeerJwk) {
+    async function decryptDmPayloadImpl(cipherJson, peerId, getPeerJwks) {
         if (!isE2eePayload(cipherJson)) return cipherJson;
-        if (typeof getPeerJwk !== 'function') {
+        if (typeof getPeerJwks !== 'function') {
             return '🔒 Не удалось расшифровать';
         }
-        const peerJwk = await getPeerJwk(peerId);
-        if (!peerJwk) return '🔒 Не удалось расшифровать (нет ключа собеседника)';
+        const peerJwksRaw = await getPeerJwks(peerId);
+        const peerJwks = Array.isArray(peerJwksRaw) ? peerJwksRaw.filter(Boolean) : peerJwksRaw ? [peerJwksRaw] : [];
+        if (!peerJwks.length) return '🔒 Не удалось расшифровать (нет ключа собеседника)';
         const myPriv = await getMyPrivateCryptoKey();
-        const peerPub = await importPublicJwk(peerJwk);
-        const aes = await deriveAesGcm256(myPriv, peerPub);
+        let o;
         try {
-            const o = JSON.parse(cipherJson.trim());
-            return await aesGcmDecryptUtf8(aes, o.iv, o.ct);
+            o = JSON.parse(cipherJson.trim());
         } catch (_) {
             return '🔒 Не удалось расшифровать сообщение';
         }
+        const ver = Number(o.florE2ee);
+        try {
+            if (ver === 2 && o.iv && o.ct && Array.isArray(o.wraps)) {
+                for (const wrapStr of o.wraps) {
+                    if (typeof wrapStr !== 'string') continue;
+                    for (const jwk of peerJwks) {
+                        try {
+                            const peerPub = await importPublicJwk(jwk);
+                            const aes = await deriveAesGcm256(myPriv, peerPub);
+                            const rawK = await decryptRawKeyWithAes(aes, wrapStr);
+                            if (rawK.length !== 32) continue;
+                            const sk = await crypto.subtle.importKey('raw', rawK, 'AES-GCM', false, ['decrypt']);
+                            const buf = await crypto.subtle.decrypt(
+                                { name: 'AES-GCM', iv: b64ToBytes(o.iv) },
+                                sk,
+                                b64ToBytes(o.ct)
+                            );
+                            return new TextDecoder().decode(buf);
+                        } catch (_) {
+                            /* пробуем следующий ключ / обёртку */
+                        }
+                    }
+                }
+                return '🔒 Не удалось расшифровать сообщение';
+            }
+            if (ver === 1 && o.iv && o.ct) {
+                for (const jwk of peerJwks) {
+                    try {
+                        const peerPub = await importPublicJwk(jwk);
+                        const aes = await deriveAesGcm256(myPriv, peerPub);
+                        return await aesGcmDecryptUtf8(aes, o.iv, o.ct);
+                    } catch (_) {
+                        /* другой публичный ключ собеседника (другое устройство) */
+                    }
+                }
+            }
+        } catch (_) {
+            return '🔒 Не удалось расшифровать сообщение';
+        }
+        return '🔒 Не удалось расшифровать сообщение';
     }
 
     async function encryptWithChannelKey(rawKey32, text) {
@@ -212,7 +272,8 @@
         if (wrapRes.ok) {
             const j = await wrapRes.json();
             const fromId = j.fromUserId;
-            const peerJwk = await cachedGetPeerJwk(fromId);
+            const peerList = await cachedGetPeerJwks(fromId);
+            const peerJwk = Array.isArray(peerList) ? peerList[0] : peerList;
             if (!peerJwk) {
                 throw new Error('Нет публичного ключа того, кто выдал ключ канала. Обновите список участников.');
             }
@@ -303,11 +364,11 @@
             },
             httpsHint:
                 'Шифрование в браузере доступно только по HTTPS (или localhost). Подключите сертификат на сервере — сообщения по HTTP идут без E2EE.',
-            async init(_florApi, _token, getPeerJwkFn) {
-                if (typeof getPeerJwkFn === 'function') cachedGetPeerJwk = getPeerJwkFn;
+            async init(_florApi, _token, getPeerJwksFn) {
+                if (typeof getPeerJwksFn === 'function') cachedGetPeerJwks = getPeerJwksFn;
             },
             setPeerKeyResolver(fn) {
-                cachedGetPeerJwk = fn;
+                cachedGetPeerJwks = fn;
             },
             async encryptDmPlaintext(_peerId, text) {
                 return text;
@@ -339,18 +400,18 @@
             return true;
         },
         httpsHint: '',
-        async init(florApi, token, getPeerJwkFn) {
-            cachedGetPeerJwk = getPeerJwkFn;
+        async init(florApi, token, getPeerJwksFn) {
+            cachedGetPeerJwks = getPeerJwksFn;
             await uploadPublicKey(florApi, token);
         },
         setPeerKeyResolver(fn) {
-            cachedGetPeerJwk = fn;
+            cachedGetPeerJwks = fn;
         },
         encryptDmPlaintext(peerId, text) {
-            return encryptDmPlaintextImpl(peerId, text, cachedGetPeerJwk);
+            return encryptDmPlaintextImpl(peerId, text, cachedGetPeerJwks);
         },
         decryptDmPayload(cipherJson, peerId) {
-            return decryptDmPayloadImpl(cipherJson, peerId, cachedGetPeerJwk);
+            return decryptDmPayloadImpl(cipherJson, peerId, cachedGetPeerJwks);
         },
         ensureChannelKey,
         redistributeMissingWraps,

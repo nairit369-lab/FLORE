@@ -148,6 +148,15 @@ function updateFlorMediaHttpsWarningEl() {
     el.style.display = florMediaNeedsSecurePage() ? 'block' : 'none';
 }
 
+function florIdentityJwksFromUser(u) {
+    if (!u) return [];
+    if (Array.isArray(u.identityPublicJwks) && u.identityPublicJwks.length) {
+        return u.identityPublicJwks.filter(Boolean);
+    }
+    if (u.identityPublicJwk) return [u.identityPublicJwk];
+    return [];
+}
+
 async function florRefreshUserKeyCache() {
     try {
         const r = await fetch(florApi('/api/users'), { headers: { Authorization: `Bearer ${token}` } });
@@ -155,7 +164,8 @@ async function florRefreshUserKeyCache() {
         const users = await r.json();
         florUserKeyCache.clear();
         users.forEach((u) => {
-            if (u.identityPublicJwk) florUserKeyCache.set(u.id, u.identityPublicJwk);
+            const jwks = florIdentityJwksFromUser(u);
+            if (jwks.length) florUserKeyCache.set(Number(u.id), jwks);
         });
     } catch (_) {}
 }
@@ -1294,7 +1304,7 @@ function florGetPingDataUrl() {
         const out = new Int16Array(n);
         for (let i = 0; i < n; i++) {
             const env = Math.sin((Math.PI * i) / Math.max(1, n - 1));
-            out[i] = Math.round(0.2 * 32767 * env * Math.sin((2 * Math.PI * f * i) / sr));
+            out[i] = Math.round(0.12 * 32767 * env * Math.sin((2 * Math.PI * f * i) / sr));
         }
         florPingDataUrlCache = florEncodeWavMono16(sr, out);
     }
@@ -1377,16 +1387,13 @@ function florVideoCaptureConstraints() {
 
 function florAudioCaptureConstraints() {
     const s = getMessengerSettings();
+    /** Не задаём sampleRate/sampleSize жёстко — иначе на части ПК/гарнитур WebRTC даёт металлический/рваный звук из‑за ресэмплинга. */
     const audio = {
         echoCancellation: true,
         noiseSuppression: true,
-        autoGainControl: true
+        autoGainControl: true,
+        channelCount: { ideal: 1 }
     };
-    if (!florUseRelaxedMediaConstraints()) {
-        audio.sampleRate = 48000;
-        audio.sampleSize = 16;
-        audio.channelCount = 1;
-    }
     const id = s.audioInputDeviceId && String(s.audioInputDeviceId).trim();
     if (id) {
         audio.deviceId = florUseRelaxedMediaConstraints() ? { ideal: id } : { exact: id };
@@ -1453,7 +1460,19 @@ function florEnsureFlorAudioCtx() {
     return florAudioCtx;
 }
 
-/** join | leave | notify — звуки звонка/комнаты; громкость умеренная */
+/** Низкочастотный фильтр + тише выход — «демо»-звуки не режут ухо синусом на полную громкость */
+function florConnectCallSfxToDestination(ctx, t0) {
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(2400, t0);
+    lp.Q.setValueAtTime(0.65, t0);
+    lp.connect(ctx.destination);
+    const master = ctx.createGain();
+    master.connect(lp);
+    return master;
+}
+
+/** join | leave | notify — мягкие короткие сигналы (звонок / войс) */
 function florPlayCallSfx(kind) {
     if (!florCallSfxAllowed()) return;
     try {
@@ -1466,33 +1485,32 @@ function florPlayCallSfx(kind) {
             return;
         }
         const t0 = ctx.currentTime;
-        const master = ctx.createGain();
-        master.connect(ctx.destination);
-        master.gain.value = kind === 'notify' ? 0.07 : 0.09;
+        const master = florConnectCallSfxToDestination(ctx, t0);
+        master.gain.value = kind === 'notify' ? 0.038 : 0.048;
 
         const tone = (freq, t, dur, vol) => {
             const o = ctx.createOscillator();
-            o.type = 'sine';
-            o.frequency.value = freq;
+            o.type = 'triangle';
+            o.frequency.setValueAtTime(freq, t);
             const g = ctx.createGain();
             o.connect(g);
             g.connect(master);
-            g.gain.setValueAtTime(0, t);
-            g.gain.linearRampToValueAtTime(vol, t + 0.02);
-            g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+            g.gain.setValueAtTime(0.0001, t);
+            g.gain.linearRampToValueAtTime(vol, t + 0.028);
+            g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
             o.start(t);
-            o.stop(t + dur + 0.02);
+            o.stop(t + dur + 0.035);
         };
 
         if (kind === 'join') {
-            tone(523.25, t0, 0.09, 0.45);
-            tone(659.25, t0 + 0.1, 0.11, 0.5);
+            tone(523.25, t0, 0.1, 0.32);
+            tone(659.25, t0 + 0.09, 0.12, 0.34);
         } else if (kind === 'leave') {
-            tone(659.25, t0, 0.08, 0.42);
-            tone(392.0, t0 + 0.1, 0.14, 0.45);
+            tone(659.25, t0, 0.09, 0.3);
+            tone(392.0, t0 + 0.09, 0.15, 0.32);
         } else if (kind === 'notify') {
-            tone(880, t0, 0.08, 0.55);
-            tone(1174.66, t0 + 0.07, 0.06, 0.35);
+            tone(660, t0, 0.07, 0.36);
+            tone(880, t0 + 0.065, 0.055, 0.24);
         }
     } catch (_) {
         try {
@@ -1509,27 +1527,26 @@ function florPlayRingBurst(incoming) {
     const ctx = florEnsureFlorAudioCtx();
     if (!ctx) return;
     const t0 = ctx.currentTime;
-    const master = ctx.createGain();
-    master.connect(ctx.destination);
-    master.gain.value = incoming ? 0.1 : 0.06;
+    const master = florConnectCallSfxToDestination(ctx, t0);
+    master.gain.value = incoming ? 0.055 : 0.042;
     const pulse = (base, t) => {
         for (let i = 0; i < 2; i++) {
             const o = ctx.createOscillator();
-            o.type = 'sine';
-            o.frequency.value = base + i * 45;
+            o.type = 'triangle';
+            o.frequency.setValueAtTime(base + i * 32, t + i * 0.22);
             const g = ctx.createGain();
             o.connect(g);
             g.connect(master);
-            const st = t + i * 0.22;
-            g.gain.setValueAtTime(0, st);
-            g.gain.linearRampToValueAtTime(0.5, st + 0.02);
-            g.gain.exponentialRampToValueAtTime(0.001, st + 0.38);
+            const st = t + i * 0.24;
+            g.gain.setValueAtTime(0.0001, st);
+            g.gain.linearRampToValueAtTime(0.32, st + 0.035);
+            g.gain.exponentialRampToValueAtTime(0.0001, st + 0.4);
             o.start(st);
-            o.stop(st + 0.42);
+            o.stop(st + 0.45);
         }
     };
-    pulse(incoming ? 425 : 340, t0);
-    if (incoming) pulse(480, t0 + 0.55);
+    pulse(incoming ? 400 : 320, t0);
+    if (incoming) pulse(460, t0 + 0.58);
 }
 
 function florStopIncomingRingtone() {
@@ -1682,10 +1699,12 @@ function initializeApp() {
             await florRefreshUserKeyCache();
             if (window.florE2ee) {
                 await window.florE2ee.init(florApi, token, async (userId) => {
-                    let k = florUserKeyCache.get(userId);
-                    if (k) return k;
+                    const uid = Number(userId);
+                    let keys = florUserKeyCache.get(uid);
+                    if (keys && keys.length) return keys;
                     await florRefreshUserKeyCache();
-                    return florUserKeyCache.get(userId) || null;
+                    keys = florUserKeyCache.get(uid);
+                    return keys && keys.length ? keys : [];
                 });
                 if (
                     typeof window.florE2ee.isActive === 'function' &&
@@ -2175,6 +2194,7 @@ function connectToSocketIO() {
                 await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
+                void florApplyRtcOpusVoiceTuning(pc);
                 socket.emit('answer', { to: data.from, answer: answer });
             } catch (e) {
                 console.error('WebRTC offer:', e);
@@ -2186,6 +2206,7 @@ function connectToSocketIO() {
                 const pc = peerConnections[data.from];
                 if (pc) {
                     await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    void florApplyRtcOpusVoiceTuning(pc);
                 }
             } catch (e) {
                 console.error('WebRTC answer:', e);
@@ -4305,7 +4326,7 @@ function florPreferHoldToRecordVoice() {
 
 function florVoiceRecordingConstraints() {
     const s = getMessengerSettings();
-    const audio = { echoCancellation: true, noiseSuppression: true };
+    const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
     const id = s.audioInputDeviceId && String(s.audioInputDeviceId).trim();
     if (id) {
         audio.deviceId = florUseRelaxedMediaConstraints() ? { ideal: id } : { exact: id };
@@ -6524,6 +6545,25 @@ async function populateDMList(friends) {
 }
 
 // WebRTC Functions
+/** Opus: ограничиваем битрейт под чистую речь (меньше артефактов и «шороха» на плохих сетях, чем дефолтный свист). */
+async function florApplyRtcOpusVoiceTuning(pc) {
+    if (!pc || typeof pc.getSenders !== 'function') return;
+    try {
+        const senders = pc.getSenders();
+        for (const s of senders) {
+            const tr = s.track;
+            if (!tr || tr.kind !== 'audio') continue;
+            const p = s.getParameters();
+            const enc = { ...(p.encodings && p.encodings[0] ? p.encodings[0] : {}) };
+            enc.maxBitrate = 128000;
+            p.encodings = [enc];
+            await s.setParameters(p);
+        }
+    } catch (e) {
+        florDevLog('florApplyRtcOpusVoiceTuning', e);
+    }
+}
+
 function createPeerConnection(remoteSocketId, isInitiator) {
     florDevLog(`Creating peer connection with ${remoteSocketId}, initiator: ${isInitiator}`);
 
@@ -6699,6 +6739,7 @@ function createPeerConnection(remoteSocketId, isInitiator) {
                 to: remoteSocketId,
                 offer: pc.localDescription
             });
+            return florApplyRtcOpusVoiceTuning(pc);
         })
         .catch(error => {
             console.error('Error creating offer:', error);

@@ -43,6 +43,8 @@
         sans-serif;
     --flor-msg-in-bg: #ffffff;
     --flor-chat-canvas: #f3f4fa;
+    /* Место под фиксированный таббар + типичный выступ FAB (iOS) */
+    --flor-mobile-tabbar-block: 104px;
 }
 
 /* Call tiles & menus use .hidden on video/avatar — must not leave a black <video> box */
@@ -1555,9 +1557,13 @@ html[data-theme='dark'] .message-group--own .message-attachment--voice {
     padding: 0 14px;
     display: flex;
     align-items: center;
+    flex-wrap: nowrap;
     gap: 8px;
     box-shadow: var(--flor-shadow);
-    transition: border-color 0.2s, box-shadow 0.2s;
+    transition:
+        border-color 0.22s ease,
+        box-shadow 0.22s ease,
+        transform 0.2s ease;
 }
 
 .message-input-wrapper:focus-within {
@@ -1613,21 +1619,37 @@ html[data-theme='dark'] .voice-msg-btn {
         inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
-/* Явный fill: надёжнее currentColor в Safari / WebView */
-.voice-msg-btn__glyph {
+/* Иконка «студийный микрофон» (капсула заливкой, подкова и стойка — stroke) */
+.voice-msg-btn__mic-body {
     fill: #4c1d95;
 }
 
-html[data-theme='dark'] .voice-msg-btn__glyph {
+html[data-theme='dark'] .voice-msg-btn__mic-body {
     fill: #faf5ff;
 }
 
-.voice-msg-btn:hover:not(:disabled) .voice-msg-btn__glyph {
+.voice-msg-btn:hover:not(:disabled) .voice-msg-btn__mic-body {
     fill: #5b21b6;
 }
 
-html[data-theme='dark'] .voice-msg-btn:hover:not(:disabled) .voice-msg-btn__glyph {
+html[data-theme='dark'] .voice-msg-btn:hover:not(:disabled) .voice-msg-btn__mic-body {
     fill: #ffffff;
+}
+
+.voice-msg-btn__mic-stroke {
+    stroke: #4c1d95;
+}
+
+html[data-theme='dark'] .voice-msg-btn__mic-stroke {
+    stroke: #faf5ff;
+}
+
+.voice-msg-btn:hover:not(:disabled) .voice-msg-btn__mic-stroke {
+    stroke: #5b21b6;
+}
+
+html[data-theme='dark'] .voice-msg-btn:hover:not(:disabled) .voice-msg-btn__mic-stroke {
+    stroke: #ffffff;
 }
 
 .voice-msg-btn__icon,
@@ -1647,8 +1669,12 @@ html[data-theme='dark'] .voice-msg-btn:hover:not(:disabled) .voice-msg-btn__glyp
     animation: florVoiceRecPulse 1.1s ease-in-out infinite;
 }
 
-.voice-msg-btn--recording .voice-msg-btn__glyph {
+.voice-msg-btn--recording .voice-msg-btn__mic-body {
     fill: #f87171 !important;
+}
+
+.voice-msg-btn--recording .voice-msg-btn__mic-stroke {
+    stroke: #f87171 !important;
 }
 
 .voice-msg-btn--uploading {
@@ -1679,6 +1705,11 @@ html[data-theme='dark'] .voice-msg-btn:hover:not(:disabled) .voice-msg-btn__glyp
     line-height: 1;
     padding: 10px 4px;
     color: var(--flor-accent, #7c3aed);
+    transition:
+        transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+        filter 0.18s ease,
+        box-shadow 0.2s ease,
+        color 0.15s ease;
 }
 
 .attach-btn:hover,
@@ -1688,7 +1719,7 @@ html[data-theme='dark'] .voice-msg-btn:hover:not(:disabled) .voice-msg-btn__glyp
 }
 
 .message-send-btn:active {
-    transform: scale(0.94);
+    transform: scale(0.92);
 }
 
 .message-send-btn__plane {
@@ -1735,6 +1766,7 @@ html[data-theme='dark'] .voice-msg-btn:hover:not(:disabled) .voice-msg-btn__glyp
 
 #messageInput {
     flex: 1;
+    min-width: 0;
     background: none;
     border: none;
     outline: none;
@@ -4511,6 +4543,15 @@ html[data-theme='dark'] .settings-btn.danger {
         min-height: 0;
         min-width: 0;
         width: 100%;
+        /* Контент не заезжает под фиксированный таббар */
+        padding-bottom: calc(var(--flor-mobile-tabbar-block, 104px) + env(safe-area-inset-bottom, 0px));
+    }
+
+    .chat-view,
+    .friends-main-view {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
     }
 
     .chat-header {
@@ -4561,8 +4602,8 @@ html[data-theme='dark'] .settings-btn.danger {
     }
 
     .message-input-container {
-        padding: 12px max(14px, env(safe-area-inset-left, 0px)) calc(12px + env(safe-area-inset-bottom, 0px))
-            max(14px, env(safe-area-inset-right, 0px));
+        flex-shrink: 0;
+        padding: 12px max(14px, env(safe-area-inset-left, 0px)) 12px max(14px, env(safe-area-inset-right, 0px));
     }
 
     .friends-header {
@@ -4814,10 +4855,7 @@ html[data-theme='dark'] .settings-btn.danger {
 
     #messageInput {
         font-size: 16px;
-    }
-
-    .main-content {
-        padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+        min-width: 0;
     }
 
     .flor-mobile-tabbar {
@@ -5151,6 +5189,10 @@ html[data-theme='dark'] .settings-btn.danger {
         border-top: 1px solid rgba(138, 128, 255, 0.1);
         padding-top: 12px;
         box-shadow: 0 -6px 28px rgba(138, 128, 255, 0.08);
+        flex-shrink: 0;
+        transition:
+            box-shadow 0.28s ease,
+            background-color 0.25s ease;
     }
 
     html[data-theme='dark'] .message-input-container {
@@ -5163,12 +5205,13 @@ html[data-theme='dark'] .settings-btn.danger {
         flex: 1;
         border-radius: 999px;
         border: 1px solid rgba(138, 128, 255, 0.2);
-        padding: 0 6px 0 10px;
+        padding: 0 4px 0 8px;
         min-height: 48px;
         min-width: 0;
         background: #ffffff;
         overflow: visible;
         align-items: center;
+        gap: 4px;
     }
 
     html[data-theme='dark'] .message-input-wrapper {
@@ -5218,24 +5261,32 @@ html[data-theme='dark'] .settings-btn.danger {
     }
 
     .message-input-wrapper .voice-msg-btn {
-        width: 48px;
-        height: 48px;
-        min-width: 48px;
-        min-height: 48px;
+        width: 44px;
+        height: 44px;
+        min-width: 44px;
+        min-height: 44px;
         padding: 0;
-        margin-right: 2px;
+        margin-right: 0;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         -webkit-appearance: none;
         appearance: none;
+        transition:
+            transform 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+            box-shadow 0.22s ease,
+            background-color 0.2s ease;
+    }
+
+    .message-input-wrapper .voice-msg-btn:active:not(:disabled) {
+        transform: scale(0.94);
     }
 
     .message-input-wrapper .voice-msg-btn svg.voice-msg-btn__icon {
-        width: 26px;
-        height: 26px;
-        min-width: 26px;
-        min-height: 26px;
+        width: 24px;
+        height: 24px;
+        min-width: 24px;
+        min-height: 24px;
     }
 
     .dm-list .channel.flor-dm-row {
@@ -5470,6 +5521,13 @@ html[data-theme='dark'] .settings-btn.danger {
 @media (max-width: 768px) and (prefers-reduced-motion: reduce) {
     .flor-sidebar-shell,
     .flor-mobile-nav-backdrop {
+        transition: none;
+    }
+
+    .message-input-wrapper,
+    .message-input-container,
+    .message-send-btn,
+    .message-input-wrapper .voice-msg-btn {
         transition: none;
     }
 }

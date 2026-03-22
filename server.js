@@ -149,6 +149,17 @@ function parsePublicE2eePayload(trimmed) {
         ) {
             return o;
         }
+        if (
+            o &&
+            Number(o.florE2ee) === 2 &&
+            typeof o.iv === 'string' &&
+            typeof o.ct === 'string' &&
+            Array.isArray(o.wraps) &&
+            o.wraps.length > 0 &&
+            o.wraps.every((w) => typeof w === 'string')
+        ) {
+            return o;
+        }
     } catch (_) {}
     return null;
 }
@@ -176,13 +187,19 @@ function normalizeMessageTextInput(raw) {
     return { ok: true, text: plain, e2ee: false };
 }
 
-function mapUserIdentityJwk(row) {
-    if (!row || !row.identity_public_jwk) return null;
+/** Все зарегистрированные публичные ключи устройств (ECDH P-256) */
+function mapUserIdentityJwks(row) {
+    if (!row || !row.identity_public_jwk) return [];
     try {
-        return JSON.parse(row.identity_public_jwk);
-    } catch (_) {
-        return null;
-    }
+        const p = JSON.parse(row.identity_public_jwk);
+        if (Array.isArray(p)) {
+            return p.filter((j) => j && j.kty === 'EC' && j.crv === 'P-256' && j.x && j.y);
+        }
+        if (p && p.kty === 'EC' && p.crv === 'P-256' && p.x && p.y) {
+            return [p];
+        }
+    } catch (_) {}
+    return [];
 }
 
 async function assertChannelMember(userId, channelId) {
@@ -746,13 +763,17 @@ app.get('/api/users', authenticateToken, async (req, res) => {
     try {
         const users = await userDB.getAll();
         res.json(
-            users.map((u) => ({
-                id: u.id,
-                username: u.username,
-                avatar: u.avatar,
-                status: u.status,
-                identityPublicJwk: mapUserIdentityJwk(u)
-            }))
+            users.map((u) => {
+                const jwks = mapUserIdentityJwks(u);
+                return {
+                    id: u.id,
+                    username: u.username,
+                    avatar: u.avatar,
+                    status: u.status,
+                    identityPublicJwks: jwks,
+                    identityPublicJwk: jwks[0] || null
+                };
+            })
         );
     } catch (error) {
         res.status(500).json({ error: 'Failed to get users' });
@@ -1068,14 +1089,18 @@ app.get('/api/servers/:serverId/members', authenticateToken, async (req, res) =>
         const members = await serverDB.getMembers(serverId);
         const srv = await serverDB.getById(serverId);
         res.json(
-            members.map((m) => ({
-                id: m.id,
-                username: m.username,
-                avatar: m.avatar,
-                status: m.status,
-                isOwner: srv && Number(srv.owner_id) === Number(m.id),
-                identityPublicJwk: mapUserIdentityJwk(m)
-            }))
+            members.map((m) => {
+                const jwks = mapUserIdentityJwks(m);
+                return {
+                    id: m.id,
+                    username: m.username,
+                    avatar: m.avatar,
+                    status: m.status,
+                    isOwner: srv && Number(srv.owner_id) === Number(m.id),
+                    identityPublicJwks: jwks,
+                    identityPublicJwk: jwks[0] || null
+                };
+            })
         );
     } catch (error) {
         res.status(500).json({ error: 'Failed to get server members' });
