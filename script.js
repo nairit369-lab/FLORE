@@ -44,8 +44,40 @@ const FLOR_ROSTER_DEAF =
     '<svg class="flor-voice-roster-svg" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>';
 /** последний ростер голоса для перерисовки после сброса настроек */
 let florLastVoiceRoster = [];
+/** roomKey → участники для превью в дереве каналов (без входа в войс) */
+const florVoiceSidebarPresenceByRoomKey = Object.create(null);
+
+function florRememberVoiceSidebarPresence(roomKey, participants) {
+    if (!roomKey) return;
+    const list = Array.isArray(participants) ? participants : [];
+    if (list.length === 0) {
+        delete florVoiceSidebarPresenceByRoomKey[roomKey];
+    } else {
+        florVoiceSidebarPresenceByRoomKey[roomKey] = list;
+    }
+}
+
+function florApplyVoiceSidebarPresenceForCurrentServer() {
+    if (currentServerId == null) return;
+    const sid = Number(currentServerId);
+    if (!Number.isFinite(sid)) return;
+    const prefix = `${sid}:`;
+    for (const rk of Object.keys(florVoiceSidebarPresenceByRoomKey)) {
+        if (!rk.startsWith(prefix)) continue;
+        renderVoiceChannelSidebarRoster(rk, florVoiceSidebarPresenceByRoomKey[rk]);
+    }
+}
 /** userId → JWK публичного ключа (E2EE) */
 let florUserKeyCache = new Map();
+/** id сообщения → повторная расшифровка, когда появятся ключи / кэш канала */
+const florE2eeRetryByMessageId = new Map();
+const FLOR_E2EE_CH_STORE_PREFIX = 'florE2ee_ch_';
+
+function florClearStoredChannelKey(channelId) {
+    try {
+        sessionStorage.removeItem(FLOR_E2EE_CH_STORE_PREFIX + channelId);
+    } catch (_) {}
+}
 let micTestStream = null;
 let micTestAnalyser = null;
 let micTestRaf = null;
@@ -139,9 +171,12 @@ async function florFetchMembersForE2ee(serverId) {
 async function florDecryptChannelMessage(channelId, text) {
     if (!window.florE2ee || !florE2ee.isE2eePayload(text)) return text;
     if (!currentServerRecord) return text;
-    try {
+    const cid = Number(channelId);
+    if (!Number.isFinite(cid)) return text;
+
+    const ensureAndDecrypt = async () => {
         const raw = await florE2ee.ensureChannelKey(
-            channelId,
+            cid,
             currentServerRecord.id,
             florApi,
             token,
@@ -149,8 +184,36 @@ async function florDecryptChannelMessage(channelId, text) {
             florFetchMembersForE2ee
         );
         return await florE2ee.decryptWithChannelKey(raw, text);
+    };
+
+    const refreshWrapsAndRetry = async () => {
+        await florRefreshUserKeyCache();
+        florClearStoredChannelKey(cid);
+        try {
+            await florE2ee.redistributeMissingWraps(
+                cid,
+                currentServerRecord.id,
+                florApi,
+                token,
+                currentUser.id,
+                florFetchMembersForE2ee
+            );
+        } catch (_) {}
+        return await ensureAndDecrypt();
+    };
+
+    try {
+        let out = await ensureAndDecrypt();
+        if (typeof out === 'string' && out.startsWith('🔒')) {
+            out = await refreshWrapsAndRetry();
+        }
+        return out;
     } catch (_) {
-        return '🔒 Не удалось расшифровать (нет ключа канала)';
+        try {
+            return await refreshWrapsAndRetry();
+        } catch (e2) {
+            return '🔒 Не удалось расшифровать (нет ключа канала)';
+        }
     }
 }
 
@@ -259,6 +322,7 @@ function renderChannelTree(tree) {
         });
         root.appendChild(wrap);
     });
+    florApplyVoiceSidebarPresenceForCurrentServer();
 }
 
 function escapeHtml(s) {
@@ -1610,6 +1674,7 @@ function initializeApp() {
         if (currentView === 'dm' && currentDMUserId != null) {
             void florMarkDmConversationRead(currentDMUserId);
         }
+        void florRetryPendingE2eeDecrypt();
     });
 
     (async () => {
@@ -1633,6 +1698,7 @@ function initializeApp() {
         } catch (e) {
             console.error('E2EE init:', e);
         }
+        void florRetryPendingE2eeDecrypt();
     })();
 }
 
@@ -1855,6 +1921,7 @@ function connectToSocketIO() {
         
         socket.on('connect', () => {
             florDevLog('Connected to server');
+            void florRetryPendingE2eeDecrypt();
         });
 
         socket.on('server-membership-update', (payload) => {
@@ -1909,9 +1976,16 @@ function connectToSocketIO() {
         socket.on('voice-channel-removed', (data) => {
             if (!data || data.serverId == null || data.channelId == null) return;
             const rk = `${data.serverId}:${data.channelId}`;
+            florRememberVoiceSidebarPresence(rk, []);
             if (activeVoiceRoomKey === rk) {
                 leaveVoiceChannel(true);
             }
+        });
+
+        socket.on('voice-channel-roster', (data) => {
+            if (!data || !data.roomKey) return;
+            florRememberVoiceSidebarPresence(data.roomKey, data.participants);
+            renderVoiceChannelSidebarRoster(data.roomKey, data.participants);
         });
         
        socket.on('connect_error', (error) => {
@@ -1951,9 +2025,13 @@ function connectToSocketIO() {
                     return;
                 }
                 let msg = data.message;
+                const rawCipher =
+                    msg && window.florE2ee && florE2ee.isE2eePayload(msg.text) ? msg.text : null;
                 if (msg && window.florE2ee && currentServerRecord && data.channelId != null) {
                     const text = await florDecryptChannelMessage(data.channelId, msg.text);
-                    msg = { ...msg, text };
+                    msg = { ...msg, text, florPendingCipher: rawCipher, channelId: data.channelId };
+                } else if (rawCipher) {
+                    msg = { ...msg, florPendingCipher: rawCipher, channelId: data.channelId };
                 }
                 msg = {
                     ...msg,
@@ -2029,6 +2107,7 @@ function connectToSocketIO() {
         socket.on('voice-roster', (data) => {
             if (!data || !data.roomKey) return;
             florLastVoiceRoster = Array.isArray(data.participants) ? data.participants : [];
+            florRememberVoiceSidebarPresence(data.roomKey, data.participants);
             renderVoiceChannelSidebarRoster(data.roomKey, data.participants);
             if (activeVoiceRoomKey === data.roomKey) {
                 renderCallVoiceRoster(data.participants);
@@ -2139,6 +2218,10 @@ function connectToSocketIO() {
         });
         socket.on('new-dm', async (data) => {
             const fromId = data.senderId;
+            const rawCipher =
+                window.florE2ee && data.message && florE2ee.isE2eePayload(data.message.text)
+                    ? data.message.text
+                    : null;
             let t = data.message.text;
             if (window.florE2ee) {
                 t = await florDecryptDmLine(t, fromId);
@@ -2155,7 +2238,9 @@ function connectToSocketIO() {
                     avatar: data.message.avatar,
                     text: t,
                     timestamp: data.message.timestamp,
-                    read: data.message.read
+                    read: data.message.read,
+                    receiverId: data.message.receiverId ?? currentUser?.id,
+                    florPendingCipher: rawCipher
                 });
                 scrollToBottom();
                 if (document.visibilityState === 'visible') {
@@ -2181,6 +2266,10 @@ function connectToSocketIO() {
 
         socket.on('dm-sent', async (data) => {
             const rid = data.receiverId;
+            const rawCipher =
+                window.florE2ee && data.message && florE2ee.isE2eePayload(data.message.text)
+                    ? data.message.text
+                    : null;
             let t = data.message.text;
             if (window.florE2ee) {
                 t = await florDecryptDmLine(t, rid);
@@ -2197,7 +2286,9 @@ function connectToSocketIO() {
                     avatar: currentUser.avatar,
                     text: t,
                     timestamp: data.message.timestamp,
-                    read: data.message.read
+                    read: data.message.read,
+                    receiverId: rid,
+                    florPendingCipher: rawCipher
                 });
                 scrollToBottom();
             }
@@ -2342,6 +2433,7 @@ function switchFriendsTab(tabName) {
     if (tabName === 'pending') {
         loadPendingRequests();
     }
+    florUpdateMobileTabHighlight();
 }
 
 async function loadFriends() {
@@ -3097,18 +3189,21 @@ function florIsMobileTabbarLayout() {
     return typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 768px)').matches;
 }
 
-/** Подсветка «Чаты» / «Друзья» в нижней панели (только мобильная вёрстка). */
+/** Подсветка вкладок нижней панели (только мобильная вёрстка, UI-kit). */
 function florUpdateMobileTabHighlight() {
     if (!florIsMobileTabbarLayout()) return;
     const tChats = document.getElementById('florTabChats');
     const tFriends = document.getElementById('florTabFriends');
-    if (!tChats || !tFriends) return;
-    tChats.classList.remove('flor-mobile-tab--active');
-    tFriends.classList.remove('flor-mobile-tab--active');
+    const tDiscover = document.getElementById('florTabDiscover');
+    const tSettings = document.getElementById('florTabSettings');
+    [tChats, tFriends, tDiscover, tSettings].forEach((el) => el?.classList.remove('flor-mobile-tab--active'));
     const sidebarOpen = document.body.classList.contains('flor-mobile-sidebar-open');
-    if (currentView === 'friends' && !sidebarOpen) {
+    const activeFriendsTab = document.querySelector('.friends-tab.active')?.getAttribute('data-tab');
+    if (currentView === 'friends' && !sidebarOpen && activeFriendsTab === 'add' && tDiscover) {
+        tDiscover.classList.add('flor-mobile-tab--active');
+    } else if (currentView === 'friends' && !sidebarOpen && tFriends) {
         tFriends.classList.add('flor-mobile-tab--active');
-    } else {
+    } else if (tChats) {
         tChats.classList.add('flor-mobile-tab--active');
     }
 }
@@ -3193,13 +3288,13 @@ function initializeMobileTabbar() {
         window.florCloseMobileSidebar?.();
         document.getElementById('addServerBtn')?.click();
     });
-    document.getElementById('florTabProfile')?.addEventListener('click', () => {
+    document.getElementById('florTabDiscover')?.addEventListener('click', () => {
+        showFriendsView();
+        switchFriendsTab('add');
         window.florCloseMobileSidebar?.();
-        if (currentUser && currentUser.id != null) {
-            openFlorUserProfile(currentUser.id);
-        }
     });
     document.getElementById('florTabSettings')?.addEventListener('click', () => {
+        window.florCloseMobileSidebar?.();
         document.getElementById('settingsBtn')?.click();
     });
 }
@@ -3420,7 +3515,9 @@ async function loadChannelMessages(channelName) {
     if (cached && cached.length) {
         if (window.florE2ee && currentServerRecord) {
             for (const message of cached) {
-                const text = await florDecryptChannelMessage(channelId, message.content);
+                const raw = message.content;
+                const pending = florE2ee.isE2eePayload(raw) ? raw : null;
+                const text = await florDecryptChannelMessage(channelId, raw);
                 addMessageToUI({
                     id: message.id,
                     userId: message.user_id,
@@ -3428,7 +3525,9 @@ async function loadChannelMessages(channelName) {
                     avatar: message.avatar || message.username.charAt(0).toUpperCase(),
                     text,
                     timestamp: message.created_at,
-                    reactions: message.reactions
+                    reactions: message.reactions,
+                    channelId,
+                    florPendingCipher: pending
                 });
             }
         } else {
@@ -3460,10 +3559,13 @@ async function loadChannelMessages(channelName) {
             }));
             messagesContainer.innerHTML = '';
             for (const message of messages) {
+                const raw = message.content;
+                const pending =
+                    window.florE2ee && currentServerRecord && florE2ee.isE2eePayload(raw) ? raw : null;
                 const text =
                     window.florE2ee && currentServerRecord
-                        ? await florDecryptChannelMessage(channelId, message.content)
-                        : message.content;
+                        ? await florDecryptChannelMessage(channelId, raw)
+                        : raw;
                 addMessageToUI({
                     id: message.id,
                     userId: message.user_id,
@@ -3471,7 +3573,9 @@ async function loadChannelMessages(channelName) {
                     avatar: message.avatar || message.username.charAt(0).toUpperCase(),
                     text,
                     timestamp: message.created_at,
-                    reactions: message.reactions
+                    reactions: message.reactions,
+                    channelId,
+                    florPendingCipher: pending
                 });
             }
             await idbPutChannelMessages(channelId, messages);
@@ -3485,6 +3589,7 @@ async function loadChannelMessages(channelName) {
     scrollToBottom();
     filterChatMessages(document.getElementById('chatMessageSearch')?.value || '');
     florSyncGlobalChatSearchFromHeader();
+    void florRetryPendingE2eeDecrypt();
 }
 
 function initializeMessageInput() {
@@ -4062,6 +4167,7 @@ function addMessageToUI(message) {
         messageGroup.appendChild(content);
     }
 
+    florRegisterE2eeRetryIfFailed(message, msgCtx, numericId);
     messagesContainer.appendChild(messageGroup);
 }
 
@@ -6122,12 +6228,100 @@ function initializeDraggableCallWindow() {
 
 async function florDecryptDmLine(cipher, peerId) {
     if (!window.florE2ee) return cipher;
-    let t = await florE2ee.decryptDmPayload(cipher, peerId);
+    const tryDecrypt = () => florE2ee.decryptDmPayload(cipher, peerId);
+    let t = await tryDecrypt();
     if (typeof t === 'string' && t.startsWith('🔒')) {
         await florRefreshUserKeyCache();
-        t = await florE2ee.decryptDmPayload(cipher, peerId);
+        t = await tryDecrypt();
+    }
+    if (typeof t === 'string' && t.startsWith('🔒')) {
+        await florRefreshUserKeyCache();
+        await new Promise((r) => setTimeout(r, 200));
+        t = await tryDecrypt();
     }
     return t;
+}
+
+async function florRetryPendingE2eeDecrypt() {
+    if (!window.florE2ee || typeof florE2ee.isActive !== 'function' || !florE2ee.isActive()) return;
+    if (!token || !currentUser) return;
+    const box = document.getElementById('messagesContainer');
+    if (!box || florE2eeRetryByMessageId.size === 0) return;
+
+    await florRefreshUserKeyCache();
+
+    for (const [msgId, entry] of [...florE2eeRetryByMessageId.entries()]) {
+        const el = box.querySelector(`[data-message-id="${msgId}"]`);
+        if (!el) {
+            florE2eeRetryByMessageId.delete(msgId);
+            continue;
+        }
+        let plain = '';
+        try {
+            if (entry.kind === 'channel') {
+                florClearStoredChannelKey(entry.channelId);
+                if (currentServerRecord) {
+                    try {
+                        await florE2ee.redistributeMissingWraps(
+                            entry.channelId,
+                            currentServerRecord.id,
+                            florApi,
+                            token,
+                            currentUser.id,
+                            florFetchMembersForE2ee
+                        );
+                    } catch (_) {}
+                }
+                plain = await florDecryptChannelMessage(entry.channelId, entry.raw);
+            } else {
+                plain = await florDecryptDmLine(entry.raw, entry.peerId);
+            }
+        } catch (_) {
+            continue;
+        }
+        if (typeof plain === 'string' && plain.length && !plain.startsWith('🔒')) {
+            const textEl = el.querySelector('.message-text');
+            if (textEl) {
+                textEl.innerHTML = '';
+                textEl.appendChild(florMessageTextToFragment(plain));
+                textEl.classList.toggle('message-text--attachment-only', florMessageIsAttachmentOnlyText(plain));
+            }
+            florE2eeRetryByMessageId.delete(msgId);
+        }
+    }
+}
+
+function florRegisterE2eeRetryIfFailed(message, msgCtx, numericId) {
+    if (!message || !message.florPendingCipher) return;
+    if (typeof message.text !== 'string' || !message.text.startsWith('🔒')) return;
+    const id = Number(numericId);
+    if (!Number.isFinite(id)) return;
+    if (msgCtx === 'channel') {
+        const ch =
+            message.channelId != null
+                ? Number(message.channelId)
+                : currentTextChannelId != null
+                  ? Number(currentTextChannelId)
+                  : NaN;
+        if (Number.isFinite(ch)) {
+            florE2eeRetryByMessageId.set(id, { kind: 'channel', channelId: ch, raw: message.florPendingCipher });
+        }
+    } else if (msgCtx === 'dm') {
+        const sid = message.senderId != null ? Number(message.senderId) : message.userId != null ? Number(message.userId) : NaN;
+        const rid = message.receiverId != null ? Number(message.receiverId) : NaN;
+        let peerId = NaN;
+        if (currentUser) {
+            const me = Number(currentUser.id);
+            if (sid === me && Number.isFinite(rid)) peerId = rid;
+            else if (Number.isFinite(sid)) peerId = sid;
+        }
+        if (!Number.isFinite(peerId) && currentDMUserId != null) {
+            peerId = Number(currentDMUserId);
+        }
+        if (Number.isFinite(peerId)) {
+            florE2eeRetryByMessageId.set(id, { kind: 'dm', peerId, raw: message.florPendingCipher });
+        }
+    }
 }
 
 async function loadDMHistory(userId) {
@@ -6153,6 +6347,7 @@ async function loadDMHistory(userId) {
                         ? message.receiver_id
                         : message.sender_id;
                 let txt = message.content;
+                const pending = window.florE2ee && florE2ee.isE2eePayload(txt) ? txt : null;
                 if (window.florE2ee) {
                     txt = await florDecryptDmLine(txt, peerId);
                 }
@@ -6165,7 +6360,9 @@ async function loadDMHistory(userId) {
                     text: txt,
                     timestamp: message.created_at,
                     reactions: message.reactions,
-                    read: message.read
+                    read: message.read,
+                    receiverId: message.receiver_id,
+                    florPendingCipher: pending
                 });
             }
         } else {
@@ -6179,6 +6376,7 @@ async function loadDMHistory(userId) {
     filterChatMessages(document.getElementById('chatMessageSearch')?.value || '');
     void florMarkDmConversationRead(userId);
     florSyncGlobalChatSearchFromHeader();
+    void florRetryPendingE2eeDecrypt();
 }
 
 florDevLog('FLOR MESSENGER initialized successfully!');

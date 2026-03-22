@@ -1479,6 +1479,23 @@ function emitVoiceRoster(roomKey, alsoNotifySocket = null) {
     if (alsoNotifySocket) {
         alsoNotifySocket.emit('voice-roster', payload);
     }
+    const sidStr = String(roomKey).split(':')[0];
+    const serverId = parseInt(sidStr, 10);
+    if (Number.isFinite(serverId)) {
+        io.to(`server-${serverId}`).emit('voice-channel-roster', payload);
+    }
+}
+
+/** Только этому клиенту — кто сейчас в голосовых каналах сервера (после join server-${id}). */
+function emitVoicePresenceSnapshotToSocket(targetSocket, serverId) {
+    const sid = Number(serverId);
+    if (!targetSocket || !Number.isFinite(sid)) return;
+    for (const [rk, set] of rooms.entries()) {
+        if (!String(rk).startsWith(`${sid}:`)) continue;
+        if (!set || set.size === 0) continue;
+        const participants = buildVoiceParticipants(rk);
+        targetSocket.emit('voice-channel-roster', { roomKey: rk, participants });
+    }
 }
 
 /** После удаления голосового канала — снять сокеты с комнаты и уведомить клиентов */
@@ -1500,6 +1517,7 @@ function evictVoiceRoomForDeletedChannel(serverId, channelId) {
         });
         rooms.delete(roomKey);
     }
+    io.to(`server-${serverId}`).emit('voice-channel-roster', { roomKey, participants: [] });
     io.to(`server-${serverId}`).emit('voice-channel-removed', { serverId, channelId });
 }
 
@@ -1549,6 +1567,7 @@ io.on('connection', async (socket) => {
         const myServers = await serverDB.getUserServers(socket.userId);
         myServers.forEach((srv) => {
             socket.join(`server-${srv.id}`);
+            emitVoicePresenceSnapshotToSocket(socket, srv.id);
         });
 
         io.emit('user-list-update', Array.from(users.values()));
@@ -1941,7 +1960,10 @@ io.on('connection', async (socket) => {
     socket.on('resync-server-rooms', async () => {
         try {
             const myServers = await serverDB.getUserServers(socket.userId);
-            myServers.forEach((srv) => socket.join(`server-${srv.id}`));
+            myServers.forEach((srv) => {
+                socket.join(`server-${srv.id}`);
+                emitVoicePresenceSnapshotToSocket(socket, srv.id);
+            });
         } catch (e) {
             console.error('resync-server-rooms', e);
         }
