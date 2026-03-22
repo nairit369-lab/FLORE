@@ -919,6 +919,17 @@ app.get('/api/dm/:userId', authenticateToken, async (req, res) => {
     }
 });
 
+/** Сводка ЛС: последнее сообщение по каждому диалогу и счётчики непрочитанного (для списка чатов). */
+app.get('/api/dm/inbox', authenticateToken, async (req, res) => {
+    try {
+        const { conversations } = await dmDB.listInboxSummariesForUser(req.user.id);
+        res.json({ conversations });
+    } catch (error) {
+        console.error('GET /api/dm/inbox:', error);
+        res.status(500).json({ error: 'Не удалось загрузить список переписок' });
+    }
+});
+
 /** Пометить все сообщения от partnerId ко мне как прочитанные; собеседник получит socket dm-read-receipt (все вкладки/устройства). */
 app.post('/api/dm/read', authenticateToken, async (req, res) => {
     try {

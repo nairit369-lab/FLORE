@@ -252,16 +252,6 @@ body {
     display: none;
 }
 
-.flor-notif-badge--compact {
-    top: 3px;
-    right: 3px;
-    min-width: 15px;
-    height: 15px;
-    padding: 0 3px;
-    font-size: 9px;
-    line-height: 15px;
-}
-
 .flor-desktop-body {
     flex: 1;
     display: flex;
@@ -477,23 +467,6 @@ html[data-theme='dark'] .server-icon.home {
     align-items: center;
     gap: 2px;
     flex-shrink: 0;
-}
-
-.flor-mobile-notif-btn {
-    display: none;
-    position: relative;
-    align-items: center;
-    justify-content: center;
-    width: 36px;
-    height: 36px;
-    padding: 0;
-    border: none;
-    border-radius: 10px;
-    background: var(--flor-input-inner);
-    color: var(--flor-muted);
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
-    touch-action: manipulation;
 }
 
 .server-header:hover {
@@ -860,6 +833,31 @@ html[data-theme='dark'] .channel.active {
     gap: 8px;
 }
 
+.channel-info.channel-info--dm {
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.flor-chat-header-avatar.friend-avatar {
+    flex-shrink: 0;
+    cursor: pointer;
+}
+
+.flor-chat-header-avatar.friend-avatar:focus-visible {
+    outline: 2px solid var(--flor-accent);
+    outline-offset: 2px;
+}
+
+.channel-info.channel-info--dm .channel-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    align-self: center;
+    line-height: 1.25;
+}
+
 .channel-info svg {
     color: var(--flor-subtle);
 }
@@ -1066,6 +1064,20 @@ html[data-theme='dark'] .message-dm-read--seen {
 
 .message-more-menu.hidden {
     display: none !important;
+}
+
+/* Мобильные: меню вне overflow .messages — позиция задаётся в JS (fixed) */
+.message-more-menu.message-more-menu--fixed {
+    position: fixed !important;
+    right: auto !important;
+    bottom: auto !important;
+    top: auto;
+    left: auto;
+    z-index: 20000;
+    max-width: min(280px, calc(100vw - 16px));
+    max-height: min(70vh, 420px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 .message-menu-item {
@@ -2606,6 +2618,62 @@ html[data-theme='dark'] .voice-msg-btn:hover:not(:disabled) .voice-msg-btn__glyp
 
 .dm-list .channel {
     padding-left: 20px;
+}
+
+.dm-list .channel.flor-dm-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px 10px 16px;
+    margin-bottom: 2px;
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+.flor-dm-row__main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.flor-dm-row__line1 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.flor-dm-row__name {
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--flor-text);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.flor-dm-row__unread {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #ef4444;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 2px var(--flor-panel-solid, var(--flor-bg));
+}
+
+.flor-dm-row__unread[hidden] {
+    display: none !important;
+}
+
+.flor-dm-row__preview {
+    font-size: 13px;
+    color: var(--flor-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .flor-dm-empty-state {
@@ -4386,6 +4454,21 @@ html[data-theme='dark'] .settings-btn.danger {
         min-width: 0;
     }
 
+    .chat-header .channel-info.channel-info--dm {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .chat-header .channel-info--dm .friend-avatar {
+        width: 40px;
+        height: 40px;
+        min-width: 40px;
+        min-height: 40px;
+        font-size: 15px;
+    }
+
     .chat-controls {
         flex: 1 1 auto;
         min-width: 0;
@@ -4557,8 +4640,16 @@ html[data-theme='dark'] .settings-btn.danger {
         color: var(--flor-accent);
     }
 
+    /* Боковые вкладки выше FAB, чтобы круг «+» не перехватывал нажатия у «Друзья» / «Чаты». */
+    .flor-mobile-tabbar .flor-mobile-tab:not(.flor-mobile-tab--fab) {
+        position: relative;
+        z-index: 3;
+    }
+
     .flor-mobile-tab--fab {
         flex: 0 0 auto;
+        position: relative;
+        z-index: 2;
         width: 52px;
         height: 52px;
         min-height: 52px;
@@ -4779,7 +4870,10 @@ html[data-theme='dark'] .settings-btn.danger {
         border: 1px solid var(--flor-border);
         padding: 0 12px 0 10px;
         min-height: 48px;
+        min-width: 0;
         background: var(--flor-input-inner);
+        overflow: visible;
+        align-items: center;
     }
 
     .message-send-btn {
@@ -4789,12 +4883,26 @@ html[data-theme='dark'] .settings-btn.danger {
         min-width: 48px;
         border-radius: 50%;
         padding: 0;
-        display: flex;
+        display: inline-flex;
         align-items: center;
         justify-content: center;
         background: linear-gradient(145deg, var(--flor-violet), var(--flor-orchid-deep));
         color: #fff;
         box-shadow: 0 4px 16px rgba(124, 58, 237, 0.4);
+        overflow: visible;
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    .message-send-btn svg {
+        display: block;
+        width: 22px;
+        height: 22px;
+        flex-shrink: 0;
+        pointer-events: none;
+    }
+
+    .message-send-btn svg path {
+        fill: currentColor;
     }
 
     .message-send-btn:hover {
@@ -4870,10 +4978,9 @@ html[data-theme='dark'] .settings-btn.danger {
         color: var(--flor-text);
     }
 
-    .flor-dm-row__meta {
-        font-size: 12px;
-        color: var(--flor-violet);
-        flex-shrink: 0;
+    .flor-dm-row__unread {
+        width: 11px;
+        height: 11px;
     }
 
     .flor-dm-row__preview {
@@ -4898,16 +5005,6 @@ html[data-theme='dark'] .settings-btn.danger {
         color: #fff;
         background: rgba(255, 255, 255, 0.15);
         border-radius: 10px;
-    }
-
-    .flor-mobile-notif-btn {
-        display: inline-flex;
-        background: rgba(255, 255, 255, 0.15);
-        color: #fff;
-    }
-
-    .flor-mobile-notif-btn:active {
-        background: rgba(255, 255, 255, 0.28);
     }
 
     .flor-voice-roster-preview {

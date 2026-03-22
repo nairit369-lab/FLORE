@@ -589,6 +589,62 @@ const dmDB = {
                 }
             );
         });
+    },
+
+    /**
+     * Последнее сообщение по каждому собеседнику + число входящих непрочитанных от каждого.
+     */
+    listInboxSummariesForUser: (userId) => {
+        return new Promise((resolve, reject) => {
+            const uid = userId;
+            const sqlLast = `
+                SELECT dm.*, u.username AS sender_username,
+                    CASE WHEN dm.sender_id = ? THEN dm.receiver_id ELSE dm.sender_id END AS peer_id
+                FROM direct_messages dm
+                JOIN users u ON dm.sender_id = u.id
+                INNER JOIN (
+                    SELECT
+                        CASE WHEN sender_id = ? THEN receiver_id ELSE sender_id END AS peer_id,
+                        MAX(id) AS max_id
+                    FROM direct_messages
+                    WHERE sender_id = ? OR receiver_id = ?
+                    GROUP BY CASE WHEN sender_id = ? THEN receiver_id ELSE sender_id END
+                ) t ON dm.id = t.max_id
+            `;
+            db.all(sqlLast, [uid, uid, uid, uid, uid], (err, lastRows) => {
+                if (err) return reject(err);
+                const sqlUnread = `
+                    SELECT sender_id AS peer_id, COUNT(*) AS unread_count
+                    FROM direct_messages
+                    WHERE receiver_id = ? AND COALESCE(read, 0) = 0
+                    GROUP BY sender_id
+                `;
+                db.all(sqlUnread, [uid], (err2, unreadRows) => {
+                    if (err2) return reject(err2);
+                    const unreadMap = {};
+                    (unreadRows || []).forEach((r) => {
+                        unreadMap[r.peer_id] = r.unread_count;
+                    });
+                    const conversations = (lastRows || []).map((row) => {
+                        const peerId = row.peer_id;
+                        const lastMessage = {
+                            id: row.id,
+                            content: row.content,
+                            sender_id: row.sender_id,
+                            receiver_id: row.receiver_id,
+                            created_at: row.created_at,
+                            sender_username: row.sender_username
+                        };
+                        return {
+                            peerId,
+                            unreadCount: unreadMap[peerId] || 0,
+                            lastMessage
+                        };
+                    });
+                    resolve({ conversations });
+                });
+            });
+        });
     }
 };
 
