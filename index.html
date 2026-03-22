@@ -91,15 +91,29 @@
 
         <!-- DM List (shown in Friends view) -->
         <div id="dmListView" class="dm-list-view">
-            <div class="dm-search-bar">
-                <input type="text" id="dmSearchInput" placeholder="Найти или начать беседу">
+            <header class="flor-dm-hero" aria-label="Список личных сообщений">
+                <button type="button" class="flor-dm-hero__menu flor-mobile-nav-btn icon-btn" id="florDmHeroMenuBtn" aria-label="Меню: серверы и чаты" aria-expanded="false" title="Меню">
+                    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"/></svg>
+                </button>
+                <h1 class="flor-dm-hero__title">Сообщения</h1>
+                <button type="button" class="flor-dm-hero__me" id="florDmHeroMeBtn" aria-label="Мой профиль" title="Профиль">
+                    <span class="flor-dm-hero__me-av friend-avatar" id="florDmHeroMeAv"></span>
+                </button>
+            </header>
+            <div class="flor-dm-stories-wrap">
+                <div class="flor-dm-stories" id="florDmStoriesStrip" aria-label="Контакты"></div>
             </div>
-            <div class="channel-category">
-                <div class="category-header">
-                    <span>ЛИЧНЫЕ СООБЩЕНИЯ</span>
+            <div class="flor-dm-list-card">
+                <div class="dm-search-bar">
+                    <input type="text" id="dmSearchInput" placeholder="Найти или начать беседу">
                 </div>
-                <div id="dmList" class="dm-list">
-                    <!-- DM items will be added here -->
+                <div class="channel-category">
+                    <div class="category-header">
+                        <span>ЛИЧНЫЕ СООБЩЕНИЯ</span>
+                    </div>
+                    <div id="dmList" class="dm-list">
+                        <!-- DM items will be added here -->
+                    </div>
                 </div>
             </div>
         </div>
@@ -173,7 +187,7 @@
                             <path class="voice-msg-btn__glyph" d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5h-2c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
                         </svg>
                     </button>
-                    <button type="button" class="message-send-btn" id="messageSendBtn" title="Отправить" aria-label="Отправить"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg></button>
+                    <button type="button" class="message-send-btn" id="messageSendBtn" title="Отправить" aria-label="Отправить"><span class="message-send-btn__plane" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></span></button>
                 </div>
             </div>
         </div>
@@ -213,25 +227,71 @@
         </div>
 
         <nav class="flor-mobile-tabbar" id="florMobileTabbar" aria-label="Нижнее меню">
-            <button type="button" class="flor-mobile-tab" id="florTabChats" title="Чаты" aria-label="Чаты">
-                <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
-                <span>Чаты</span>
-            </button>
-            <button type="button" class="flor-mobile-tab" id="florTabFriends" title="Друзья" aria-label="Друзья">
-                <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
-                <span>Друзья</span>
-            </button>
-            <button type="button" class="flor-mobile-tab flor-mobile-tab--fab" id="florTabCompose" title="Создать сервер" aria-label="Создать сервер">
-                <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-            </button>
-            <button type="button" class="flor-mobile-tab" id="florTabProfile" title="Профиль" aria-label="Профиль и статус">
-                <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
-                <span>Профиль</span>
-            </button>
-            <button type="button" class="flor-mobile-tab" id="florTabSettings" title="Настройки" aria-label="Настройки">
-                <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.488.488 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
-                <span>Ещё</span>
-            </button>
+            <div class="flor-mobile-tabbar__shell">
+                <svg class="flor-mobile-tabbar__bg" viewBox="0 0 400 84" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+                    <path
+                        class="flor-mobile-tabbar__bg-path"
+                        d="M0,34 Q0,10 16,10 L156,10 Q200,54 244,10 L384,10 Q400,10 400,34 L400,84 L0,84 Z"
+                    />
+                </svg>
+                <div class="flor-mobile-tabbar__inner">
+                    <div class="flor-mobile-tabbar__cluster flor-mobile-tabbar__cluster--left">
+                        <button type="button" class="flor-mobile-tab flor-mobile-tab--line" id="florTabChats" title="Чаты" aria-label="Чаты">
+                            <svg class="flor-mobile-tab__icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+                                <rect x="4" y="4" width="6.5" height="6.5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.75" />
+                                <rect x="13.5" y="4" width="6.5" height="6.5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.75" />
+                                <rect x="4" y="13.5" width="6.5" height="6.5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.75" />
+                                <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.75" />
+                            </svg>
+                            <span class="flor-mobile-tab__label">Чаты</span>
+                        </button>
+                        <button type="button" class="flor-mobile-tab flor-mobile-tab--line" id="florTabFriends" title="Друзья" aria-label="Друзья">
+                            <svg class="flor-mobile-tab__icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+                                <circle cx="6.5" cy="7" r="1.35" fill="currentColor" />
+                                <circle cx="6.5" cy="12" r="1.35" fill="currentColor" />
+                                <circle cx="6.5" cy="17" r="1.35" fill="currentColor" />
+                                <path d="M10.5 7H20M10.5 12H20M10.5 17H20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" />
+                            </svg>
+                            <span class="flor-mobile-tab__label">Друзья</span>
+                        </button>
+                    </div>
+                    <div class="flor-mobile-tabbar__fab-slot" aria-hidden="true"></div>
+                    <div class="flor-mobile-tabbar__cluster flor-mobile-tabbar__cluster--right">
+                        <button type="button" class="flor-mobile-tab flor-mobile-tab--line" id="florTabSettings" title="Настройки" aria-label="Настройки">
+                            <svg class="flor-mobile-tab__icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+                                <rect x="3.5" y="6" width="17" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.75" />
+                                <path d="M3.5 10.5h17" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" />
+                            </svg>
+                            <span class="flor-mobile-tab__label">Ещё</span>
+                        </button>
+                        <button type="button" class="flor-mobile-tab flor-mobile-tab--line" id="florTabProfile" title="Профиль" aria-label="Профиль и статус">
+                            <svg class="flor-mobile-tab__icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+                                <circle cx="12" cy="9" r="3.5" fill="none" stroke="currentColor" stroke-width="1.75" />
+                                <path
+                                    d="M5.5 20.5v-.5c0-2.2 2.4-4 6.5-4s6.5 1.8 6.5 4v.5"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="1.75"
+                                    stroke-linecap="round"
+                                />
+                            </svg>
+                            <span class="flor-mobile-tab__label">Профиль</span>
+                        </button>
+                    </div>
+                    <button type="button" class="flor-mobile-tab flor-mobile-tab--fab flor-mobile-tab--fab-notch" id="florTabCompose" title="Создать сервер" aria-label="Создать сервер">
+                        <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.85"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                d="M7.5 16.5L16.5 7.5M16.5 7.5H11M16.5 7.5V13M16.5 16.5L7.5 7.5M7.5 7.5H13M7.5 7.5V12"
+                            />
+                        </svg>
+                    </button>
+                </div>
+            </div>
         </nav>
     </div>
     </div>

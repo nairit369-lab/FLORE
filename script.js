@@ -1655,9 +1655,13 @@ function updateUserInfo() {
     const userAvatar = document.querySelector('.user-avatar');
     const username = document.querySelector('.username');
     const userStatus = document.querySelector('.user-status');
+    const heroAv = document.getElementById('florDmHeroMeAv');
 
     if (userAvatar) {
         florFillAvatarEl(userAvatar, currentUser && currentUser.avatar, currentUser && currentUser.username);
+    }
+    if (heroAv) {
+        florFillAvatarEl(heroAv, currentUser && currentUser.avatar, currentUser && currentUser.username);
     }
     const disp = getMessengerSettings().displayName;
     if (username) username.textContent = (disp && disp.trim()) || currentUser.username;
@@ -2137,7 +2141,7 @@ function connectToSocketIO() {
             const fromId = data.senderId;
             let t = data.message.text;
             if (window.florE2ee) {
-                t = await florE2ee.decryptDmPayload(t, fromId);
+                t = await florDecryptDmLine(t, fromId);
             }
             const preview = florTruncateDmPreview(florHumanizeDmPreviewLine(t));
             const viewing = currentView === 'dm' && Number(currentDMUserId) === Number(fromId);
@@ -2169,7 +2173,9 @@ function connectToSocketIO() {
             const showUnread = !(viewing && document.visibilityState === 'visible');
             await florPatchDmListRow(fromId, {
                 previewText: preview,
-                showUnread
+                showUnread,
+                previewTime: florFormatDmTime(data.message.timestamp),
+                unreadCount: showUnread ? 1 : 0
             });
         });
 
@@ -2177,7 +2183,7 @@ function connectToSocketIO() {
             const rid = data.receiverId;
             let t = data.message.text;
             if (window.florE2ee) {
-                t = await florE2ee.decryptDmPayload(t, rid);
+                t = await florDecryptDmLine(t, rid);
             }
             const preview = florTruncateDmPreview(florHumanizeDmPreviewLine(t));
             const viewing = currentView === 'dm' && Number(currentDMUserId) === Number(rid);
@@ -2197,7 +2203,8 @@ function connectToSocketIO() {
             }
             await florPatchDmListRow(rid, {
                 previewText: preview ? `Вы: ${preview}` : 'Вы: …',
-                showUnread: false
+                showUnread: false,
+                previewTime: florFormatDmTime(data.message.timestamp)
             });
         });
 
@@ -2346,6 +2353,7 @@ async function loadFriends() {
         displayFriends(friends);
         await florRefreshUserKeyCache();
         await populateDMList(friends);
+        florPopulateDmStoriesStrip(friends);
         void florRefreshFriendRequestBadge();
     } catch (error) {
         console.error('Error loading friends:', error);
@@ -2945,6 +2953,7 @@ window.startDM = async function(friendId, friendUsername, friendAvatar) {
     syncServerHeaderMenuVisibility();
     florSyncDmChatHeaderControls();
     florUpdateMobileTabHighlight();
+    florSetChannelListMode('dm');
 };
 
 // Show friends view
@@ -2974,6 +2983,7 @@ function showFriendsView() {
     syncServerHeaderMenuVisibility();
     florSyncDmChatHeaderControls();
     florUpdateMobileTabHighlight();
+    florSetChannelListMode('dm');
 }
 
 // Show server view
@@ -3019,6 +3029,7 @@ async function showServerView(server) {
     syncServerHeaderMenuVisibility();
     florSyncDmChatHeaderControls();
     florUpdateMobileTabHighlight();
+    florSetChannelListMode('server');
 }
 
 function syncServerHeaderMenuVisibility() {
@@ -3033,7 +3044,16 @@ function syncServerHeaderMenuVisibility() {
         }
     }
     const exportBtn = document.getElementById('exportChatBtn');
-    if (exportBtn) exportBtn.hidden = currentView !== 'server';
+    if (exportBtn) {
+        const hideExport = currentView !== 'server';
+        exportBtn.hidden = hideExport;
+        exportBtn.style.display = hideExport ? 'none' : '';
+    }
+}
+
+function florChatViewSetDmMode(isDm) {
+    const cv = document.getElementById('chatView');
+    if (cv) cv.classList.toggle('flor-chat-view--dm', Boolean(isDm));
 }
 
 function florSyncDmChatHeaderControls() {
@@ -3046,6 +3066,7 @@ function florSyncDmChatHeaderControls() {
     if (info) {
         info.classList.toggle('channel-info--dm', isDm);
     }
+    florChatViewSetDmMode(isDm);
 }
 
 async function loadUserServers() {
@@ -3153,6 +3174,14 @@ function initializeMobileNav() {
 }
 
 function initializeMobileTabbar() {
+    document.getElementById('florDmHeroMenuBtn')?.addEventListener('click', () => {
+        window.florOpenMobileSidebar?.();
+    });
+    document.getElementById('florDmHeroMeBtn')?.addEventListener('click', () => {
+        if (currentUser && currentUser.id != null) {
+            openFlorUserProfile(currentUser.id);
+        }
+    });
     document.getElementById('florTabChats')?.addEventListener('click', () => {
         window.florOpenMobileSidebar?.();
     });
@@ -3624,13 +3653,42 @@ async function florMarkDmConversationRead(partnerId) {
     } catch (_) {}
 }
 
-function florSetDmRowUnread(peerId, show) {
+function florFormatDmTime(iso) {
+    if (!iso) return '';
+    try {
+        const d = new Date(iso);
+        if (Number.isNaN(+d)) return '';
+        const now = new Date();
+        if (d.toDateString() === now.toDateString()) {
+            return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        }
+        return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+    } catch (_) {
+        return '';
+    }
+}
+
+function florSetChannelListMode(mode) {
+    const el = document.getElementById('channelList');
+    if (!el) return;
+    el.classList.toggle('flor-channel-list--dm', mode === 'dm');
+    el.classList.toggle('flor-channel-list--server', mode === 'server');
+}
+
+function florSetDmRowUnread(peerId, show, unreadCount) {
     const row = document.querySelector(`#dmList .flor-dm-row[data-dm-id="${Number(peerId)}"]`);
     if (!row) return;
     const dot = row.querySelector('.flor-dm-row__unread');
-    if (dot) {
-        dot.hidden = !show;
-        dot.setAttribute('aria-hidden', show ? 'false' : 'true');
+    if (!dot) return;
+    dot.hidden = !show;
+    dot.setAttribute('aria-hidden', show ? 'false' : 'true');
+    if (show) {
+        dot.classList.add('flor-dm-row__unread--badge');
+        const n = unreadCount != null ? Number(unreadCount) : 0;
+        dot.textContent = n > 99 ? '99+' : n > 1 ? String(n) : '1';
+    } else {
+        dot.classList.remove('flor-dm-row__unread--badge');
+        dot.textContent = '';
     }
 }
 
@@ -3660,7 +3718,7 @@ async function florDmPreviewPlaintext(peerId, rawContent) {
     if (rawContent == null || rawContent === '') return '';
     try {
         if (window.florE2ee) {
-            return await florE2ee.decryptDmPayload(rawContent, peerId);
+            return await florDecryptDmLine(rawContent, peerId);
         }
         return String(rawContent);
     } catch (_) {
@@ -3668,17 +3726,91 @@ async function florDmPreviewPlaintext(peerId, rawContent) {
     }
 }
 
+function florDmUnreadFromMessages(messages, peerId, myId) {
+    const pid = Number(peerId);
+    const mid = Number(myId);
+    if (!Number.isFinite(pid) || !Number.isFinite(mid)) return 0;
+    if (!Array.isArray(messages) || messages.length === 0) return 0;
+    let n = 0;
+    for (const m of messages) {
+        if (Number(m.sender_id) === pid && Number(m.receiver_id) === mid && !Number(m.read)) {
+            n++;
+        }
+    }
+    return n;
+}
+
+async function florFetchDmInboxMap() {
+    const inboxByPeer = new Map();
+    try {
+        const inboxRes = await fetch(florApi('/api/dm/inbox'), {
+            headers: { Authorization: `Bearer ${token}` },
+            credentials: 'same-origin'
+        });
+        if (inboxRes.ok) {
+            const inboxData = await inboxRes.json();
+            for (const c of inboxData.conversations || []) {
+                const pid = Number(c.peerId ?? c.peer_id);
+                if (!Number.isFinite(pid)) continue;
+                inboxByPeer.set(pid, c);
+            }
+        }
+    } catch (_) {}
+    return inboxByPeer;
+}
+
+async function florDmSummaryFromPeerFallback(peerId) {
+    const pid = Number(peerId);
+    if (!Number.isFinite(pid) || !currentUser || currentUser.id == null) return null;
+    try {
+        const r = await fetch(florApi(`/api/dm/${pid}`), {
+            headers: { Authorization: `Bearer ${token}` },
+            credentials: 'same-origin'
+        });
+        if (!r.ok) return null;
+        const messages = await r.json();
+        if (!Array.isArray(messages) || messages.length === 0) return null;
+        const last = messages[messages.length - 1];
+        const unreadCount = florDmUnreadFromMessages(messages, pid, currentUser.id);
+        return {
+            peerId: pid,
+            unreadCount,
+            lastMessage: {
+                id: last.id,
+                content: last.content,
+                sender_id: last.sender_id,
+                receiver_id: last.receiver_id,
+                created_at: last.created_at
+            }
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
 async function florPatchDmListRow(peerId, opts) {
     const row = document.querySelector(`#dmList .flor-dm-row[data-dm-id="${Number(peerId)}"]`);
     if (!row) return;
     const prevEl = row.querySelector('.flor-dm-row__preview');
+    const timeEl = row.querySelector('.flor-dm-row__time');
     const dot = row.querySelector('.flor-dm-row__unread');
     if (opts.previewText != null && prevEl) {
         prevEl.textContent = opts.previewText;
     }
+    if (opts.previewTime != null && timeEl) {
+        timeEl.textContent = opts.previewTime;
+    }
     if (opts.showUnread != null && dot) {
         dot.hidden = !opts.showUnread;
         dot.setAttribute('aria-hidden', opts.showUnread ? 'false' : 'true');
+        if (opts.showUnread) {
+            dot.classList.add('flor-dm-row__unread--badge');
+            const n = opts.unreadCount != null ? Number(opts.unreadCount) : 1;
+            dot.textContent = n > 99 ? '99+' : String(Math.max(1, n));
+        } else {
+            dot.classList.remove('flor-dm-row__unread--badge');
+            dot.textContent = '';
+        }
     }
 }
 
@@ -5988,11 +6120,22 @@ function initializeDraggableCallWindow() {
    });
 }
 
+async function florDecryptDmLine(cipher, peerId) {
+    if (!window.florE2ee) return cipher;
+    let t = await florE2ee.decryptDmPayload(cipher, peerId);
+    if (typeof t === 'string' && t.startsWith('🔒')) {
+        await florRefreshUserKeyCache();
+        t = await florE2ee.decryptDmPayload(cipher, peerId);
+    }
+    return t;
+}
+
 async function loadDMHistory(userId) {
     const messagesContainer = document.getElementById('messagesContainer');
     messagesContainer.innerHTML = '';
 
     try {
+        await florRefreshUserKeyCache();
         const response = await fetch(florApi(`/api/dm/${userId}`), {
             headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -6011,7 +6154,7 @@ async function loadDMHistory(userId) {
                         : message.sender_id;
                 let txt = message.content;
                 if (window.florE2ee) {
-                    txt = await florE2ee.decryptDmPayload(txt, peerId);
+                    txt = await florDecryptDmLine(txt, peerId);
                 }
                 addMessageToUI({
                     id: message.id,
@@ -6043,22 +6186,56 @@ if (currentUser) {
    florDevLog('Logged in as:', currentUser.username);
 }
 
+function florPopulateDmStoriesStrip(friends) {
+    const strip = document.getElementById('florDmStoriesStrip');
+    if (!strip) return;
+    strip.innerHTML = '';
+    const searchBtn = document.createElement('button');
+    searchBtn.type = 'button';
+    searchBtn.className = 'flor-dm-story flor-dm-story--search';
+    searchBtn.setAttribute('aria-label', 'Поиск в личных сообщениях');
+    searchBtn.title = 'Поиск';
+    searchBtn.innerHTML =
+        '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>';
+    searchBtn.addEventListener('click', () => {
+        const inp = document.getElementById('dmSearchInput');
+        if (inp) {
+            inp.focus();
+            inp.select?.();
+        }
+    });
+    strip.appendChild(searchBtn);
+    (friends || []).slice(0, 16).forEach((f) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'flor-dm-story';
+        b.title = f.username;
+        const av = document.createElement('div');
+        av.className = 'friend-avatar flor-dm-story__av';
+        florFillAvatarEl(av, f.avatar, f.username);
+        b.appendChild(av);
+        b.addEventListener('click', () => startDM(f.id, f.username, f.avatar));
+        strip.appendChild(b);
+    });
+}
+
 async function populateDMList(friends) {
     const dmList = document.getElementById('dmList');
     dmList.innerHTML = '';
 
-    let inboxByPeer = new Map();
-    try {
-        const inboxRes = await fetch(florApi('/api/dm/inbox'), {
-            headers: { Authorization: `Bearer ${token}` }
-        });
-        if (inboxRes.ok) {
-            const inboxData = await inboxRes.json();
-            for (const c of inboxData.conversations || []) {
-                inboxByPeer.set(Number(c.peerId), c);
+    let inboxByPeer = await florFetchDmInboxMap();
+    const peerIdsFromFriends = friends
+        .map((f) => Number(f.id))
+        .filter((id) => Number.isFinite(id));
+    const missingPeerIds = peerIdsFromFriends.filter((id) => !inboxByPeer.has(id));
+    if (missingPeerIds.length) {
+        const fallbacks = await Promise.all(missingPeerIds.map((id) => florDmSummaryFromPeerFallback(id)));
+        for (const fb of fallbacks) {
+            if (fb && !inboxByPeer.has(fb.peerId)) {
+                inboxByPeer.set(fb.peerId, fb);
             }
         }
-    } catch (_) {}
+    }
     if (friends.length === 0) {
         const emptyDM = document.createElement('div');
         emptyDM.className = 'flor-dm-empty-state';
@@ -6079,10 +6256,14 @@ async function populateDMList(friends) {
         const conv = inboxByPeer.get(peerId);
         let previewLine = 'Нет сообщений';
         let showUnread = false;
+        let unreadCount = 0;
+        let timeStr = '';
         if (conv && Number(conv.unreadCount) > 0) {
             showUnread = true;
+            unreadCount = Number(conv.unreadCount) || 0;
         }
         if (conv && conv.lastMessage) {
+            timeStr = florFormatDmTime(conv.lastMessage.created_at);
             const plain = await florDmPreviewPlaintext(peerId, conv.lastMessage.content);
             const tr = florTruncateDmPreview(florHumanizeDmPreviewLine(plain));
             if (tr) {
@@ -6105,23 +6286,36 @@ async function populateDMList(friends) {
         });
         const main = document.createElement('div');
         main.className = 'flor-dm-row__main';
-        const line1 = document.createElement('div');
-        line1.className = 'flor-dm-row__line1';
+        const rowTop = document.createElement('div');
+        rowTop.className = 'flor-dm-row__top';
         const nameSp = document.createElement('span');
         nameSp.className = 'flor-dm-row__name';
         nameSp.textContent = friend.username;
+        const timeSp = document.createElement('span');
+        timeSp.className = 'flor-dm-row__time';
+        timeSp.textContent = timeStr;
+        rowTop.appendChild(nameSp);
+        rowTop.appendChild(timeSp);
+
+        const rowBottom = document.createElement('div');
+        rowBottom.className = 'flor-dm-row__bottom';
+        const prev = document.createElement('div');
+        prev.className = 'flor-dm-row__preview';
+        prev.textContent = previewLine;
         const unreadDot = document.createElement('span');
         unreadDot.className = 'flor-dm-row__unread';
         unreadDot.setAttribute('aria-label', 'Непрочитанные сообщения');
         unreadDot.hidden = !showUnread;
         unreadDot.setAttribute('aria-hidden', showUnread ? 'false' : 'true');
-        line1.appendChild(nameSp);
-        line1.appendChild(unreadDot);
-        const prev = document.createElement('div');
-        prev.className = 'flor-dm-row__preview';
-        prev.textContent = previewLine;
-        main.appendChild(line1);
-        main.appendChild(prev);
+        if (showUnread) {
+            unreadDot.classList.add('flor-dm-row__unread--badge');
+            unreadDot.textContent = unreadCount > 99 ? '99+' : String(Math.max(1, unreadCount));
+        }
+        rowBottom.appendChild(prev);
+        rowBottom.appendChild(unreadDot);
+
+        main.appendChild(rowTop);
+        main.appendChild(rowBottom);
         dmItem.appendChild(av);
         dmItem.appendChild(main);
         dmItem.addEventListener('click', () => {

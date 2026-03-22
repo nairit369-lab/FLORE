@@ -519,7 +519,7 @@ const dmDB = {
             const sql = `
                 SELECT dm.*, u.username, u.avatar
                 FROM direct_messages dm
-                JOIN users u ON dm.sender_id = u.id
+                LEFT JOIN users u ON dm.sender_id = u.id
                 WHERE (dm.sender_id = ? AND dm.receiver_id = ?)
                    OR (dm.sender_id = ? AND dm.receiver_id = ?)
                 ORDER BY dm.created_at DESC
@@ -601,7 +601,7 @@ const dmDB = {
                 SELECT dm.*, u.username AS sender_username,
                     CASE WHEN dm.sender_id = ? THEN dm.receiver_id ELSE dm.sender_id END AS peer_id
                 FROM direct_messages dm
-                JOIN users u ON dm.sender_id = u.id
+                LEFT JOIN users u ON dm.sender_id = u.id
                 INNER JOIN (
                     SELECT
                         CASE WHEN sender_id = ? THEN receiver_id ELSE sender_id END AS peer_id,
@@ -623,10 +623,11 @@ const dmDB = {
                     if (err2) return reject(err2);
                     const unreadMap = {};
                     (unreadRows || []).forEach((r) => {
-                        unreadMap[r.peer_id] = r.unread_count;
+                        const pk = Number(r.peer_id);
+                        if (Number.isFinite(pk)) unreadMap[pk] = Number(r.unread_count) || 0;
                     });
                     const conversations = (lastRows || []).map((row) => {
-                        const peerId = row.peer_id;
+                        const peerId = Number(row.peer_id);
                         const lastMessage = {
                             id: row.id,
                             content: row.content,
@@ -637,7 +638,7 @@ const dmDB = {
                         };
                         return {
                             peerId,
-                            unreadCount: unreadMap[peerId] || 0,
+                            unreadCount: Number.isFinite(peerId) ? unreadMap[peerId] || 0 : 0,
                             lastMessage
                         };
                     });
