@@ -146,6 +146,32 @@ function initializeDatabase() {
     });
 }
 
+/** Плоский список JWK из БД (без вложенных массивов) */
+function flattenIdentityJwksFromDbPayload(p) {
+    const out = [];
+    const visit = (v) => {
+        if (v == null) return;
+        if (Array.isArray(v)) {
+            v.forEach(visit);
+            return;
+        }
+        if (typeof v === 'string') {
+            try {
+                visit(JSON.parse(v));
+            } catch (_) {}
+            return;
+        }
+        if (typeof v === 'object' && v.kty === 'EC' && v.x && v.y) {
+            const crv = String(v.crv || '').toUpperCase();
+            if (crv === 'P-256' || crv === 'PRIME256V1') {
+                out.push({ ...v, crv: 'P-256' });
+            }
+        }
+    };
+    visit(p);
+    return out;
+}
+
 // User operations
 const userDB = {
     create: (username, email, hashedPassword) => {
@@ -259,11 +285,7 @@ const userDB = {
                 try {
                     if (row && row.identity_public_jwk) {
                         const p = JSON.parse(row.identity_public_jwk);
-                        if (Array.isArray(p)) {
-                            arr = p.filter((x) => x && x.kty === 'EC');
-                        } else if (p && p.kty === 'EC') {
-                            arr = [p];
-                        }
+                        arr = flattenIdentityJwksFromDbPayload(Array.isArray(p) ? p : [p]);
                     }
                 } catch (_) {
                     arr = [];

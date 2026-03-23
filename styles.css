@@ -47,10 +47,23 @@
     --flor-mobile-tabbar-block: 104px;
 }
 
-/* Call tiles & menus use .hidden on video/avatar — must not leave a black <video> box */
-.flor-call-tile-video.hidden,
+/* Call tiles: аватар скрываем полностью; видео — НЕ display:none, иначе Chromium часто не воспроизводит аудио WebRTC (голос без камеры). */
 .flor-call-tile-avatar.hidden {
     display: none !important;
+}
+
+.flor-call-tile-video.hidden {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    overflow: hidden !important;
+    clip-path: inset(50%) !important;
+    white-space: nowrap !important;
 }
 
 .flor-mobile-tabbar {
@@ -617,6 +630,10 @@ html[data-theme='dark'] .channel.active {
     font-weight: 600;
     font-size: 14px;
     color: white;
+    flex-shrink: 0;
+    aspect-ratio: 1;
+    box-sizing: border-box;
+    overflow: hidden;
 }
 
 .user-details {
@@ -1986,14 +2003,71 @@ html[data-theme='dark'] .voice-msg-btn:hover:not(:disabled) .voice-msg-btn__mic-
     color: #fecaca;
 }
 
+.call-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.call-fullscreen-btn {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: none;
+    border-radius: 8px;
+    background: rgba(167, 139, 250, 0.14);
+    color: #e9d5ff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, color 0.2s, transform 0.15s;
+}
+
+.call-fullscreen-btn:hover {
+    background: rgba(196, 181, 253, 0.28);
+    color: #fff;
+}
+
+.call-fullscreen-btn:active {
+    transform: scale(0.96);
+}
+
+.call-fullscreen-btn svg {
+    display: block;
+}
+
+.call-fullscreen-btn.flor-call-fullscreen-active {
+    background: rgba(196, 181, 253, 0.35);
+    color: #fff;
+}
+
 .call-interface.fullscreen {
     width: 100vw;
-    height: 100vh;
+    width: 100dvw;
     max-width: 100vw;
+    max-width: 100dvw;
+    height: 100vh;
+    height: 100dvh;
+    min-width: 0;
     border-radius: 0;
-    top: 0;
-    left: 0;
-    transform: none;
+    top: 0 !important;
+    left: 0 !important;
+    transform: none !important;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    box-sizing: border-box;
+}
+
+.call-interface.fullscreen .call-header {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+
+.call-interface.fullscreen .call-participants {
+    max-height: none;
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 @keyframes callSlideIn {
@@ -2984,6 +3058,9 @@ html[data-theme='dark'] .flor-dm-empty-state__icon {
     color: white;
     margin-right: 12px;
     flex-shrink: 0;
+    aspect-ratio: 1;
+    box-sizing: border-box;
+    overflow: hidden;
 }
 
 .friend-info {
@@ -4547,6 +4624,19 @@ html[data-theme='dark'] .settings-btn.danger {
         padding-bottom: calc(var(--flor-mobile-tabbar-block, 104px) + env(safe-area-inset-bottom, 0px));
     }
 
+    /* Открыт чат: нижнее меню скрыто — не резервируем место под таббар */
+    body.flor-mobile-chat-active {
+        --flor-mobile-tabbar-block: 0px;
+    }
+
+    body.flor-mobile-chat-active .main-content {
+        padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    }
+
+    body.flor-mobile-chat-active #florMobileTabbar {
+        display: none !important;
+    }
+
     .chat-view,
     .friends-main-view {
         flex: 1 1 auto;
@@ -4714,6 +4804,10 @@ html[data-theme='dark'] .settings-btn.danger {
         flex-shrink: 0;
         width: 42px;
         height: 42px;
+        min-width: 42px;
+        min-height: 42px;
+        max-width: 42px;
+        max-height: 42px;
         border-radius: 50%;
         border: 2px solid rgba(255, 255, 255, 0.95);
         padding: 0;
@@ -4723,6 +4817,10 @@ html[data-theme='dark'] .settings-btn.danger {
         display: flex;
         align-items: center;
         justify-content: center;
+        box-sizing: border-box;
+        aspect-ratio: 1;
+        -webkit-appearance: none;
+        appearance: none;
     }
 
     .flor-dm-hero__me-av {
@@ -4731,6 +4829,9 @@ html[data-theme='dark'] .settings-btn.danger {
         min-width: 0;
         border-radius: 50%;
         font-size: 15px;
+        flex-shrink: 0;
+        aspect-ratio: 1;
+        overflow: hidden;
     }
 
     .flor-dm-stories-wrap {
@@ -4742,6 +4843,7 @@ html[data-theme='dark'] .settings-btn.danger {
 
     .flor-dm-stories {
         display: flex;
+        align-items: center;
         gap: 12px;
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
@@ -4754,9 +4856,13 @@ html[data-theme='dark'] .settings-btn.danger {
     }
 
     .flor-dm-story {
-        flex: 0 0 auto;
+        flex: 0 0 56px;
         width: 56px;
         height: 56px;
+        min-width: 56px;
+        min-height: 56px;
+        max-width: 56px;
+        max-height: 56px;
         border-radius: 50%;
         border: none;
         padding: 0;
@@ -4767,6 +4873,11 @@ html[data-theme='dark'] .settings-btn.danger {
         display: flex;
         align-items: center;
         justify-content: center;
+        box-sizing: border-box;
+        aspect-ratio: 1;
+        align-self: center;
+        -webkit-appearance: none;
+        appearance: none;
     }
 
     html[data-theme='dark'] .flor-dm-story {
@@ -4784,11 +4895,18 @@ html[data-theme='dark'] .settings-btn.danger {
     }
 
     .flor-dm-story__av {
-        width: 100%;
-        height: 100%;
-        min-width: 0;
+        width: 56px;
+        height: 56px;
+        min-width: 56px;
+        min-height: 56px;
+        max-width: 56px;
+        max-height: 56px;
+        flex: 0 0 56px;
         border-radius: 50%;
         font-size: 18px;
+        aspect-ratio: 1;
+        box-sizing: border-box;
+        overflow: hidden;
     }
 
     .flor-dm-list-card {
@@ -5056,6 +5174,46 @@ html[data-theme='dark'] .settings-btn.danger {
         color: rgba(255, 255, 255, 0.65);
     }
 
+    /* Компактная «шторка» шапки в открытом чате (меньше высоты, тот же градиент) */
+    body.flor-mobile-chat-active .chat-header {
+        padding-top: calc(2px + env(safe-area-inset-top, 0px));
+        padding-bottom: 4px;
+        row-gap: 4px;
+        column-gap: 6px;
+        border-radius: 0 0 18px 0;
+        box-shadow: 0 6px 20px rgba(138, 128, 255, 0.22);
+        min-height: 0;
+    }
+
+    body.flor-mobile-chat-active .chat-header .channel-info--dm .friend-avatar {
+        width: 32px;
+        height: 32px;
+        min-width: 32px;
+        min-height: 32px;
+        font-size: 13px;
+    }
+
+    body.flor-mobile-chat-active .chat-header .channel-info span,
+    body.flor-mobile-chat-active .chat-header .channel-name {
+        font-size: 14px;
+    }
+
+    body.flor-mobile-chat-active .chat-header .icon-btn,
+    body.flor-mobile-chat-active .chat-header .flor-mobile-nav-btn {
+        min-width: 36px;
+        min-height: 36px;
+        padding: 6px;
+    }
+
+    body.flor-mobile-chat-active .chat-controls {
+        gap: 4px 6px;
+    }
+
+    body.flor-mobile-chat-active .chat-header .chat-search-input {
+        padding: 5px 8px;
+        font-size: 13px;
+    }
+
     .messages {
         background: #f7f7f9;
         padding-bottom: 8px;
@@ -5305,7 +5463,16 @@ html[data-theme='dark'] .settings-btn.danger {
         margin-right: 0;
         width: 52px;
         height: 52px;
+        min-width: 52px;
+        min-height: 52px;
+        max-width: 52px;
+        max-height: 52px;
         font-size: 18px;
+        aspect-ratio: 1;
+        align-self: center;
+        flex-shrink: 0;
+        box-sizing: border-box;
+        overflow: hidden;
     }
 
     .flor-dm-row__main {
@@ -5723,6 +5890,8 @@ html[data-theme='dark'] .flor-splash {
     width: 100%;
     height: 100%;
     object-fit: cover;
+    object-position: center;
+    display: block;
 }
 
 .message-author.message-author--clickable {

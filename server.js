@@ -187,17 +187,40 @@ function normalizeMessageTextInput(raw) {
     return { ok: true, text: plain, e2ee: false };
 }
 
+/** Собирает плоский список JWK из массива / вложенных массивов / JSON-строк элементов */
+function flattenStoredIdentityJwksPayload(p) {
+    const out = [];
+    const visit = (v) => {
+        if (v == null) return;
+        if (Array.isArray(v)) {
+            v.forEach(visit);
+            return;
+        }
+        if (typeof v === 'string') {
+            try {
+                visit(JSON.parse(v));
+            } catch (_) {}
+            return;
+        }
+        if (typeof v === 'object' && v.kty === 'EC' && v.x && v.y) {
+            const crv = String(v.crv || '').toUpperCase();
+            if (crv === 'P-256' || crv === 'PRIME256V1') {
+                const j = { ...v, crv: 'P-256' };
+                out.push(j);
+            }
+        }
+    };
+    visit(p);
+    return out;
+}
+
 /** Все зарегистрированные публичные ключи устройств (ECDH P-256) */
 function mapUserIdentityJwks(row) {
     if (!row || !row.identity_public_jwk) return [];
     try {
         const p = JSON.parse(row.identity_public_jwk);
-        if (Array.isArray(p)) {
-            return p.filter((j) => j && j.kty === 'EC' && j.crv === 'P-256' && j.x && j.y);
-        }
-        if (p && p.kty === 'EC' && p.crv === 'P-256' && p.x && p.y) {
-            return [p];
-        }
+        const raw = Array.isArray(p) ? p : [p];
+        return flattenStoredIdentityJwksPayload(raw);
     } catch (_) {}
     return [];
 }
@@ -1476,6 +1499,39 @@ const users = new Map();
 const rooms = new Map();
 /** socketId → голосовое состояние в комнате */
 const voiceUserState = new Map();
+/** Очередь входящего звонка, если получатель ещё не подключён по сокету (как в мессенджерах) */
+const pendingIncomingCalls = new Map();
+const PENDING_CALL_TTL_MS = 120000;
+
+function flushPendingIncomingCallForUser(userId, targetSocket) {
+    const uid = Number(userId);
+    if (!Number.isFinite(uid) || !targetSocket) return;
+    const entry = pendingIncomingCalls.get(uid);
+    if (!entry) return;
+    if (Date.now() - entry.createdAt > PENDING_CALL_TTL_MS) {
+        pendingIncomingCalls.delete(uid);
+        return;
+    }
+    pendingIncomingCalls.delete(uid);
+    targetSocket.emit('incoming-call', {
+        from: entry.payload.from,
+        type: entry.payload.type
+    });
+}
+
+setInterval(() => {
+    const now = Date.now();
+    for (const [uid, entry] of pendingIncomingCalls.entries()) {
+        if (now - entry.createdAt <= PENDING_CALL_TTL_MS) continue;
+        pendingIncomingCalls.delete(uid);
+        if (entry.callerSocketId) {
+            io.to(entry.callerSocketId).emit('call-rejected', {
+                message: 'Абонент не в сети',
+                code: 'pending-expired'
+            });
+        }
+    }
+}, 20000);
 
 function buildVoiceParticipants(roomKey) {
     const set = rooms.get(roomKey);
@@ -1596,6 +1652,8 @@ io.on('connection', async (socket) => {
         });
 
         io.emit('user-list-update', Array.from(users.values()));
+
+        flushPendingIncomingCallForUser(socket.userId, socket);
     } catch (error) {
         console.error('Error loading user:', error);
         socket.disconnect();
@@ -1910,20 +1968,32 @@ io.on('connection', async (socket) => {
                 return;
             }
 
-            const receiverEntries = Array.from(users.values()).filter((u) => Number(u.id) === Number(to));
+            const receiverEntries = [];
+            for (const u of users.values()) {
+                if (Number(u.id) === Number(to)) receiverEntries.push(u);
+            }
+            const payload = {
+                from: {
+                    id: fromId,
+                    username: sender.username,
+                    socketId: socket.id,
+                    avatar: sender.avatar || sender.username.charAt(0).toUpperCase()
+                },
+                type
+            };
             if (receiverEntries.length) {
-                const payload = {
-                    from: {
-                        id: fromId,
-                        username: sender.username,
-                        socketId: socket.id,
-                        avatar: sender.avatar || sender.username.charAt(0).toUpperCase()
-                    },
-                    type
-                };
                 receiverEntries.forEach((u) => io.to(u.socketId).emit('incoming-call', payload));
+                socket.emit('call-delivered', { ok: true });
             } else {
-                socket.emit('call-rejected', { message: 'Пользователь не в сети' });
+                pendingIncomingCalls.set(Number(to), {
+                    payload,
+                    callerSocketId: socket.id,
+                    createdAt: Date.now()
+                });
+                socket.emit('call-queued', {
+                    message:
+                        'Собеседник сейчас не в приложении. Когда зайдёт — увидит входящий звонок (до 2 мин).'
+                });
             }
         } catch (e) {
             console.error('initiate-call:', e);
@@ -1996,6 +2066,12 @@ io.on('connection', async (socket) => {
 
     // Handle disconnection
     socket.on('disconnect', async () => {
+        for (const [uid, entry] of pendingIncomingCalls.entries()) {
+            if (entry.callerSocketId === socket.id) {
+                pendingIncomingCalls.delete(uid);
+            }
+        }
+
         const user = users.get(socket.id);
         
         if (user) {

@@ -49,6 +49,61 @@
         }
     }
 
+    /** Плоский список JWK (в т.ч. из вложенных массивов — иначе importKey получает массив и падает) */
+    function flattenPeerIdentityJwksPayload(raw) {
+        const out = [];
+        const visit = (v) => {
+            if (v == null) return;
+            if (Array.isArray(v)) {
+                v.forEach(visit);
+                return;
+            }
+            if (typeof v === 'string') {
+                try {
+                    visit(JSON.parse(v));
+                } catch (_) {}
+                return;
+            }
+            if (typeof v === 'object' && v.kty === 'EC' && v.x && v.y) {
+                const crv = String(v.crv || '').toUpperCase();
+                if (crv === 'P-256' || crv === 'PRIME256V1') {
+                    out.push({ ...v, crv: 'P-256' });
+                }
+            }
+        };
+        visit(raw);
+        return out;
+    }
+
+    function identityJwksFromMemberRow(m) {
+        if (!m) return [];
+        if (Array.isArray(m.identityPublicJwks) && m.identityPublicJwks.length) {
+            return flattenPeerIdentityJwksPayload(m.identityPublicJwks);
+        }
+        if (m.identityPublicJwk) return flattenPeerIdentityJwksPayload([m.identityPublicJwk]);
+        return [];
+    }
+
+    function normalizeDmCipherInput(cipherJson) {
+        if (typeof cipherJson === 'string') return cipherJson;
+        if (cipherJson && typeof cipherJson === 'object' && cipherJson.florE2ee != null) {
+            try {
+                return JSON.stringify(cipherJson);
+            } catch (_) {}
+        }
+        return cipherJson;
+    }
+
+    function normalizeWrapEntry(w) {
+        if (typeof w === 'string') return w;
+        if (w && typeof w === 'object') {
+            try {
+                return JSON.stringify(w);
+            } catch (_) {}
+        }
+        return null;
+    }
+
     async function importPublicJwk(jwk) {
         return crypto.subtle.importKey('jwk', jwk, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
     }
@@ -159,8 +214,15 @@
         if (typeof getPeerJwks !== 'function') {
             throw new Error('Внутренняя ошибка: нет резолвера ключей собеседника');
         }
-        const peerJwks = await getPeerJwks(peerId);
-        const list = Array.isArray(peerJwks) ? peerJwks.filter(Boolean) : peerJwks ? [peerJwks] : [];
+        let peerJwksRaw;
+        try {
+            peerJwksRaw = await getPeerJwks(peerId);
+        } catch (e) {
+            throw new Error('Не удалось загрузить ключи собеседника для шифрования');
+        }
+        const list = flattenPeerIdentityJwksPayload(
+            Array.isArray(peerJwksRaw) ? peerJwksRaw : peerJwksRaw ? [peerJwksRaw] : []
+        );
         if (!list.length) {
             throw new Error(
                 'Нет ключа шифрования у собеседника. ' +
@@ -189,25 +251,40 @@
     }
 
     async function decryptDmPayloadImpl(cipherJson, peerId, getPeerJwks) {
-        if (!isE2eePayload(cipherJson)) return cipherJson;
+        const cipherStr = normalizeDmCipherInput(cipherJson);
+        if (typeof cipherStr !== 'string' || !isE2eePayload(cipherStr)) return cipherJson;
         if (typeof getPeerJwks !== 'function') {
             return '🔒 Не удалось расшифровать';
         }
-        const peerJwksRaw = await getPeerJwks(peerId);
-        const peerJwks = Array.isArray(peerJwksRaw) ? peerJwksRaw.filter(Boolean) : peerJwksRaw ? [peerJwksRaw] : [];
+        let peerJwksRaw;
+        try {
+            peerJwksRaw = await getPeerJwks(peerId);
+        } catch (_) {
+            return '🔒 Не удалось расшифровать';
+        }
+        const peerJwks = flattenPeerIdentityJwksPayload(
+            Array.isArray(peerJwksRaw) ? peerJwksRaw : peerJwksRaw ? [peerJwksRaw] : []
+        );
         if (!peerJwks.length) return '🔒 Не удалось расшифровать (нет ключа собеседника)';
         const myPriv = await getMyPrivateCryptoKey();
         let o;
         try {
-            o = JSON.parse(cipherJson.trim());
+            o = JSON.parse(cipherStr.trim());
         } catch (_) {
             return '🔒 Не удалось расшифровать сообщение';
         }
         const ver = Number(o.florE2ee);
         try {
             if (ver === 2 && o.iv && o.ct && Array.isArray(o.wraps)) {
-                for (const wrapStr of o.wraps) {
-                    if (typeof wrapStr !== 'string') continue;
+                const wrapStrs = [];
+                for (const w of o.wraps) {
+                    const ws = normalizeWrapEntry(w);
+                    if (ws) wrapStrs.push(ws);
+                }
+                if (!wrapStrs.length) {
+                    return '🔒 Не удалось расшифровать сообщение';
+                }
+                for (const wrapStr of wrapStrs) {
                     for (const jwk of peerJwks) {
                         try {
                             const peerPub = await importPublicJwk(jwk);
@@ -252,10 +329,11 @@
     }
 
     async function decryptWithChannelKey(rawKey32, cipherJson) {
-        if (!isE2eePayload(cipherJson)) return cipherJson;
+        const s = normalizeDmCipherInput(cipherJson);
+        if (typeof s !== 'string' || !isE2eePayload(s)) return cipherJson;
         const aesKey = await crypto.subtle.importKey('raw', rawKey32, 'AES-GCM', false, ['encrypt', 'decrypt']);
         try {
-            const o = JSON.parse(cipherJson.trim());
+            const o = JSON.parse(s.trim());
             return await aesGcmDecryptUtf8(aesKey, o.iv, o.ct);
         } catch (_) {
             return '🔒 Не удалось расшифровать';
@@ -272,15 +350,40 @@
         if (wrapRes.ok) {
             const j = await wrapRes.json();
             const fromId = j.fromUserId;
-            const peerList = await cachedGetPeerJwks(fromId);
-            const peerJwk = Array.isArray(peerList) ? peerList[0] : peerList;
-            if (!peerJwk) {
+            let peerList = [];
+            try {
+                const rawList = await cachedGetPeerJwks(fromId);
+                peerList = flattenPeerIdentityJwksPayload(
+                    Array.isArray(rawList) ? rawList : rawList ? [rawList] : []
+                );
+            } catch (_) {
+                peerList = [];
+            }
+            if (!peerList.length) {
                 throw new Error('Нет публичного ключа того, кто выдал ключ канала. Обновите список участников.');
             }
             const myPriv = await getMyPrivateCryptoKey();
-            const aes = await deriveAesGcm256(myPriv, await importPublicJwk(peerJwk));
-            const raw = await decryptRawKeyWithAes(aes, j.wrap);
-            if (raw.length !== 32) throw new Error('BAD_CHANNEL_KEY');
+            let raw = null;
+            let lastErr = null;
+            for (const peerJwk of peerList) {
+                try {
+                    const aes = await deriveAesGcm256(myPriv, await importPublicJwk(peerJwk));
+                    const r = await decryptRawKeyWithAes(aes, j.wrap);
+                    if (r.length === 32) {
+                        raw = r;
+                        break;
+                    }
+                } catch (e) {
+                    lastErr = e;
+                }
+            }
+            if (!raw) {
+                throw new Error(
+                    lastErr && lastErr.message
+                        ? `Не удалось развернуть ключ канала: ${lastErr.message}`
+                        : 'Не удалось развернуть ключ канала (попробуйте обновить страницу).'
+                );
+            }
             sessionStorage.setItem(cacheKey, bytesToB64(raw));
             return raw;
         }
@@ -306,8 +409,10 @@
         const wraps = [];
         for (const m of members) {
             if (m.id === userId) continue;
-            if (!m.identityPublicJwk) continue;
-            const pub = await importPublicJwk(m.identityPublicJwk);
+            const jwks = identityJwksFromMemberRow(m);
+            const pubJwk = jwks[0] || m.identityPublicJwk;
+            if (!pubJwk) continue;
+            const pub = await importPublicJwk(pubJwk);
             const aes = await deriveAesGcm256(myPriv, pub);
             const wrap = await encryptRawKeyWithAes(aes, keyRaw);
             wraps.push({ userId: m.id, wrap });
@@ -343,8 +448,10 @@
         for (const m of members) {
             if (m.id === userId) continue;
             if (wrapped.has(m.id)) continue;
-            if (!m.identityPublicJwk) continue;
-            const pub = await importPublicJwk(m.identityPublicJwk);
+            const jwks = identityJwksFromMemberRow(m);
+            const pubJwk = jwks[0] || m.identityPublicJwk;
+            if (!pubJwk) continue;
+            const pub = await importPublicJwk(pubJwk);
             const aes = await deriveAesGcm256(myPriv, pub);
             wraps.push({ userId: m.id, wrap: await encryptRawKeyWithAes(aes, keyRaw) });
         }

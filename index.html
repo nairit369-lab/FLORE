@@ -281,7 +281,13 @@
                 <div class="call-channel-name">Голосовой канал</div>
                 <div id="callVoiceMeta" class="call-voice-meta">—</div>
             </div>
-            <button type="button" class="close-call-btn" id="closeCallBtn" title="Покинуть звонок" aria-label="Покинуть звонок"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
+            <div class="call-header-actions">
+                <button type="button" class="call-fullscreen-btn" id="callFullscreenBtn" title="На весь экран" aria-label="На весь экран" aria-pressed="false">
+                    <span class="flor-fs-icon-enter" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg></span>
+                    <span class="flor-fs-icon-exit" hidden aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path fill="currentColor" d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg></span>
+                </button>
+                <button type="button" class="close-call-btn" id="closeCallBtn" title="Покинуть звонок" aria-label="Покинуть звонок"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
+            </div>
         </div>
         <div id="callRosterList" class="call-roster-list flor-scroll" aria-label="Участники голоса"></div>
         <div class="call-participants flor-call-tiles">

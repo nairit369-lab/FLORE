@@ -15,6 +15,7 @@ let inCall = false;
 let localStream = null;
 let screenStream = null;
 let peerConnections = {};
+let florVoiceRosterRepairTimer = null;
 let isVideoEnabled = true;
 let isAudioEnabled = true;
 let isMuted = false;
@@ -29,6 +30,8 @@ let currentServerChannelMap = {};
 let currentServerChannelIdToName = {};
 let activeVoiceChannelName = null;
 let activeVoiceRoomKey = null;
+/** true пока окно звонка в нативном браузерном fullscreen (не псевдо-класс на iOS) */
+let florCallNativeFullscreenActive = false;
 /** id активного текстового канала (надёжнее, чем только имя) */
 let currentTextChannelId = null;
 let currentServerRecord = null;
@@ -148,12 +151,37 @@ function updateFlorMediaHttpsWarningEl() {
     el.style.display = florMediaNeedsSecurePage() ? 'block' : 'none';
 }
 
+function florFlattenIdentityJwksList(raw) {
+    const out = [];
+    const visit = (v) => {
+        if (v == null) return;
+        if (Array.isArray(v)) {
+            v.forEach(visit);
+            return;
+        }
+        if (typeof v === 'string') {
+            try {
+                visit(JSON.parse(v));
+            } catch (_) {}
+            return;
+        }
+        if (typeof v === 'object' && v.kty === 'EC' && v.x && v.y) {
+            const crv = String(v.crv || '').toUpperCase();
+            if (crv === 'P-256' || crv === 'PRIME256V1') {
+                out.push({ ...v, crv: 'P-256' });
+            }
+        }
+    };
+    visit(raw);
+    return out;
+}
+
 function florIdentityJwksFromUser(u) {
     if (!u) return [];
     if (Array.isArray(u.identityPublicJwks) && u.identityPublicJwks.length) {
-        return u.identityPublicJwks.filter(Boolean);
+        return florFlattenIdentityJwksList(u.identityPublicJwks);
     }
-    if (u.identityPublicJwk) return [u.identityPublicJwk];
+    if (u.identityPublicJwk) return florFlattenIdentityJwksList([u.identityPublicJwk]);
     return [];
 }
 
@@ -1727,12 +1755,56 @@ function requestNotificationPermission() {
     }
 }
 
-function showNotification(title, body) {
+function showNotification(title, body, options) {
     const s = getMessengerSettings();
     if (s.desktopNotifications === false) return;
     if (isDoNotDisturbNow()) return;
-    if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification(title, { body, icon: '/assets/flor-logo.png' });
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const o = options && typeof options === 'object' ? options : {};
+    const n = new Notification(title, {
+        body: body || '',
+        icon: '/assets/apple-touch-icon.png',
+        tag: o.tag != null ? String(o.tag) : 'flor-default',
+        requireInteraction: !!o.requireInteraction
+    });
+    if (o.onclickFocus) {
+        n.onclick = () => {
+            try {
+                window.focus();
+            } catch (_) {}
+            try {
+                n.close();
+            } catch (_) {}
+        };
+    }
+}
+
+function florNotifyIncomingCall(caller, type) {
+    const name = (caller && caller.username) || 'Контакт';
+    const kind = type === 'video' ? 'Видеозвонок' : 'Звонок';
+    showNotification(`${kind}: ${name}`, 'Входящий вызов — откройте приложение', {
+        tag: 'flor-incoming-call',
+        requireInteraction: true,
+        onclickFocus: true
+    });
+}
+
+/** Досоздаёт WebRTC-связи с участниками голоса, если события join/existing пропустились */
+function florVoiceRepairMissingPeers(participants) {
+    if (!inCall || !activeVoiceRoomKey || !localStream || !socket) return;
+    if (!Array.isArray(participants)) return;
+    for (const p of participants) {
+        const sid = p && p.socketId;
+        if (!sid || sid === socket.id) continue;
+        if (peerConnections[sid]) continue;
+        florVoicePeerMeta[sid] = {
+            userId: p.userId,
+            username: p.username || '',
+            avatar: p.avatar || ''
+        };
+        const iOffer = String(socket.id).localeCompare(String(sid)) < 0;
+        florDevLog('Voice repair peer', sid, 'initiator=', iOffer);
+        createPeerConnection(sid, iOffer);
     }
 }
 
@@ -2067,11 +2139,22 @@ function connectToSocketIO() {
                 }
             }
             
-            if (document.hidden && getMessengerSettings().desktopNotifications !== false && !isDoNotDisturbNow()) {
+            const viewingThisChannel =
+                channelName === currentChannel && currentView === 'server';
+            if (
+                getMessengerSettings().desktopNotifications !== false &&
+                !isDoNotDisturbNow() &&
+                'Notification' in window &&
+                Notification.permission === 'granted' &&
+                (!viewingThisChannel || document.hidden)
+            ) {
                 const rawT = data.message.text;
                 const preview =
                     window.florE2ee && florE2ee.isE2eePayload(rawT) ? 'зашифрованное сообщение' : rawT;
-                showNotification('Новое сообщение', `${data.message.author}: ${preview}`);
+                showNotification(channelName || 'Канал', `${data.message.author}: ${preview}`, {
+                    tag: `flor-ch-${channelId}`,
+                    onclickFocus: true
+                });
             }
         });
         
@@ -2130,6 +2213,12 @@ function connectToSocketIO() {
             renderVoiceChannelSidebarRoster(data.roomKey, data.participants);
             if (activeVoiceRoomKey === data.roomKey) {
                 renderCallVoiceRoster(data.participants);
+                clearTimeout(florVoiceRosterRepairTimer);
+                florVoiceRosterRepairTimer = setTimeout(() => {
+                    florVoiceRosterRepairTimer = null;
+                    if (activeVoiceRoomKey !== data.roomKey) return;
+                    florVoiceRepairMissingPeers(florLastVoiceRoster);
+                }, 450);
             }
         });
 
@@ -2283,6 +2372,20 @@ function connectToSocketIO() {
                 previewTime: florFormatDmTime(data.message.timestamp),
                 unreadCount: showUnread ? 1 : 0
             });
+
+            if (
+                getMessengerSettings().desktopNotifications !== false &&
+                !isDoNotDisturbNow() &&
+                'Notification' in window &&
+                Notification.permission === 'granted' &&
+                (!viewing || document.hidden)
+            ) {
+                const author = (data.message && data.message.author) || 'Личные сообщения';
+                showNotification(author, preview || 'Новое сообщение', {
+                    tag: `flor-dm-${fromId}`,
+                    onclickFocus: true
+                });
+            }
         });
 
         socket.on('dm-sent', async (data) => {
@@ -2333,6 +2436,22 @@ function connectToSocketIO() {
             if (from) {
                 showIncomingCall(from, type);
             }
+        });
+
+        socket.on('call-queued', (data) => {
+            if (!window.currentCallDetails || !window.currentCallDetails.isInitiator) return;
+            const el = document.querySelector('.call-channel-name');
+            if (el) {
+                el.textContent =
+                    (data && data.message) ||
+                    'Ожидаем, когда контакт появится в сети…';
+            }
+        });
+
+        socket.on('call-delivered', () => {
+            if (!window.currentCallDetails || !window.currentCallDetails.isInitiator) return;
+            const el = document.querySelector('.call-channel-name');
+            if (el) el.textContent = 'Звонок…';
         });
 
         socket.on('call-accepted', (data) => {
@@ -2865,6 +2984,7 @@ async function initiateCall(friendId, type) {
         // Show call interface
         const callInterface = document.getElementById('callInterface');
         callInterface.classList.remove('hidden');
+        florUpdateCallFullscreenButton();
         
         // Update call header
         document.querySelector('.call-channel-name').textContent = 'Вызов…';
@@ -2913,6 +3033,7 @@ async function initiateCall(friendId, type) {
 
 // Show incoming call notification
 function showIncomingCall(caller, type) {
+    florNotifyIncomingCall(caller, type);
     const incomingCallDiv = document.getElementById('incomingCall');
     const callerName = incomingCallDiv.querySelector('.caller-name');
     const callerAvatar = incomingCallDiv.querySelector('.caller-avatar');
@@ -2958,6 +3079,7 @@ async function acceptCall(caller, type) {
         // Show call interface
         const callInterface = document.getElementById('callInterface');
         callInterface.classList.remove('hidden');
+        florUpdateCallFullscreenButton();
         
         document.querySelector('.call-channel-name').textContent = `Звонок с ${caller.username}`;
         
@@ -3067,6 +3189,7 @@ window.startDM = async function(friendId, friendUsername, friendAvatar) {
     florSyncDmChatHeaderControls();
     florUpdateMobileTabHighlight();
     florSetChannelListMode('dm');
+    florSyncMobileChatChrome();
 };
 
 // Show friends view
@@ -3097,6 +3220,7 @@ function showFriendsView() {
     florSyncDmChatHeaderControls();
     florUpdateMobileTabHighlight();
     florSetChannelListMode('dm');
+    florSyncMobileChatChrome();
 }
 
 // Show server view
@@ -3143,6 +3267,7 @@ async function showServerView(server) {
     florSyncDmChatHeaderControls();
     florUpdateMobileTabHighlight();
     florSetChannelListMode('server');
+    florSyncMobileChatChrome();
 }
 
 function syncServerHeaderMenuVisibility() {
@@ -3208,6 +3333,18 @@ async function loadUserServers() {
 
 function florIsMobileTabbarLayout() {
     return typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 768px)').matches;
+}
+
+/** В мобильной вёрстке: в открытом чате скрываем нижний таббар и компактим шапку (класс на body). */
+function florSyncMobileChatChrome() {
+    const cv = document.getElementById('chatView');
+    const chatOpen = !!(cv && cv.style.display !== 'none');
+    const hideTabbar = florIsMobileTabbarLayout() && chatOpen;
+    document.body.classList.toggle('flor-mobile-chat-active', hideTabbar);
+    const tabbar = document.getElementById('florMobileTabbar');
+    if (tabbar) {
+        tabbar.setAttribute('aria-hidden', hideTabbar ? 'true' : 'false');
+    }
 }
 
 /** Подсветка вкладок нижней панели (только мобильная вёрстка, UI-kit). */
@@ -3279,6 +3416,7 @@ function initializeMobileNav() {
     const onLayoutChange = () => {
         if (!isMobileNavLayout()) setMobileSidebarOpen(false);
         else syncMobileNavBackdropAria();
+        florSyncMobileChatChrome();
     };
     mq?.addEventListener('change', onLayoutChange);
     window.addEventListener('orientationchange', () => setTimeout(onLayoutChange, 280));
@@ -5890,6 +6028,7 @@ async function joinVoiceChannel(channelId, displayLabel) {
             const callInterface = document.getElementById('callInterface');
             if (callInterface && callInterface.classList.contains('hidden')) {
                 callInterface.classList.remove('hidden');
+                florUpdateCallFullscreenButton();
             }
             return;
         }
@@ -5907,6 +6046,7 @@ async function joinVoiceChannel(channelId, displayLabel) {
 
     const callInterface = document.getElementById('callInterface');
     callInterface.classList.remove('hidden');
+    florUpdateCallFullscreenButton();
 
     const nameEl = document.querySelector('.call-channel-name');
     if (nameEl) nameEl.textContent = displayLabel;
@@ -5968,6 +6108,107 @@ async function initializeMedia(opts) {
     }
 }
 
+function florGetDocumentFullscreenElement() {
+    return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function florUpdateCallFullscreenButton() {
+    const btn = document.getElementById('callFullscreenBtn');
+    if (!btn) return;
+    const el = document.getElementById('callInterface');
+    const fsEl = florGetDocumentFullscreenElement();
+    const on = !!(el && !el.classList.contains('hidden') && (fsEl === el || el.classList.contains('fullscreen')));
+    btn.classList.toggle('flor-call-fullscreen-active', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.title = on ? 'Выйти из полноэкранного режима' : 'На весь экран';
+    const enter = btn.querySelector('.flor-fs-icon-enter');
+    const exit = btn.querySelector('.flor-fs-icon-exit');
+    if (enter) enter.hidden = on;
+    if (exit) exit.hidden = !on;
+}
+
+function florExitCallFullscreenIfNeeded() {
+    const el = document.getElementById('callInterface');
+    if (!el) return;
+    const fsEl = florGetDocumentFullscreenElement();
+    if (fsEl === el) {
+        if (document.exitFullscreen) void document.exitFullscreen().catch(() => {});
+        else if (document.webkitExitFullscreen) void document.webkitExitFullscreen().catch(() => {});
+    }
+    florCallNativeFullscreenActive = false;
+    el.classList.remove('fullscreen');
+    el.style.left = '';
+    el.style.top = '';
+    el.style.transform = '';
+    el.style.width = '';
+    el.style.height = '';
+    florUpdateCallFullscreenButton();
+}
+
+function florOnCallFullscreenChange() {
+    const el = document.getElementById('callInterface');
+    if (!el) return;
+    const fsEl = florGetDocumentFullscreenElement();
+    if (fsEl === el) {
+        florCallNativeFullscreenActive = true;
+        el.classList.add('fullscreen');
+        el.style.left = '';
+        el.style.top = '';
+        el.style.transform = '';
+        el.style.width = '';
+        el.style.height = '';
+    } else if (florCallNativeFullscreenActive) {
+        florCallNativeFullscreenActive = false;
+        el.classList.remove('fullscreen');
+        el.style.left = '';
+        el.style.top = '';
+        el.style.transform = '';
+        el.style.width = '';
+        el.style.height = '';
+    }
+    florUpdateCallFullscreenButton();
+}
+
+async function florToggleCallFullscreen() {
+    const el = document.getElementById('callInterface');
+    if (!el || el.classList.contains('hidden')) return;
+
+    const fsEl = florGetDocumentFullscreenElement();
+
+    if (fsEl === el) {
+        if (document.exitFullscreen) await document.exitFullscreen().catch(() => {});
+        else if (document.webkitExitFullscreen) await document.webkitExitFullscreen().catch(() => {});
+        florUpdateCallFullscreenButton();
+        return;
+    }
+
+    if (el.classList.contains('fullscreen')) {
+        el.classList.remove('fullscreen');
+        el.style.left = '';
+        el.style.top = '';
+        el.style.transform = '';
+        el.style.width = '';
+        el.style.height = '';
+        florUpdateCallFullscreenButton();
+        return;
+    }
+
+    el.style.left = '';
+    el.style.top = '';
+    el.style.transform = '';
+    el.style.width = '';
+    el.style.height = '';
+
+    try {
+        if (el.requestFullscreen) await el.requestFullscreen();
+        else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
+        else throw new Error('no fullscreen api');
+    } catch (_) {
+        el.classList.add('fullscreen');
+    }
+    florUpdateCallFullscreenButton();
+}
+
 function leaveVoiceChannel(force = false, opts) {
     opts = opts || {};
     if (!inCall) return;
@@ -6006,6 +6247,8 @@ function leaveVoiceChannel(force = false, opts) {
         florSyncDmVideoCallLayout();
     }
 
+    florExitCallFullscreenIfNeeded();
+
     const callInterface = document.getElementById('callInterface');
     callInterface.classList.add('hidden');
 
@@ -6021,10 +6264,21 @@ function leaveVoiceChannel(force = false, opts) {
 
 function initializeCallControls() {
     const closeCallBtn = document.getElementById('closeCallBtn');
+    const callFullscreenBtn = document.getElementById('callFullscreenBtn');
     const toggleVideoBtn = document.getElementById('toggleVideoBtn');
     const toggleAudioBtn = document.getElementById('toggleAudioBtn');
     const toggleScreenBtn = document.getElementById('toggleScreenBtn');
-    
+
+    document.addEventListener('fullscreenchange', florOnCallFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', florOnCallFullscreenChange);
+
+    callFullscreenBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void florToggleCallFullscreen();
+    });
+    callFullscreenBtn?.addEventListener('mousedown', (e) => e.stopPropagation());
+    closeCallBtn?.addEventListener('mousedown', (e) => e.stopPropagation());
+
     closeCallBtn.addEventListener('click', () => {
         // End call for both voice channels and direct calls
         if (window.currentCallDetails) {
@@ -6216,6 +6470,9 @@ function initializeDraggableCallWindow() {
    let offsetX, offsetY;
 
    callHeader.addEventListener('mousedown', (e) => {
+       if (e.target.closest('button')) return;
+       if (callInterface.classList.contains('fullscreen')) return;
+       if (florGetDocumentFullscreenElement() === callInterface) return;
        isDragging = true;
        offsetX = e.clientX - callInterface.offsetLeft;
        offsetY = e.clientY - callInterface.offsetTop;
@@ -6554,10 +6811,12 @@ async function florApplyRtcOpusVoiceTuning(pc) {
             const tr = s.track;
             if (!tr || tr.kind !== 'audio') continue;
             const p = s.getParameters();
-            const enc = { ...(p.encodings && p.encodings[0] ? p.encodings[0] : {}) };
-            enc.maxBitrate = 128000;
-            p.encodings = [enc];
-            await s.setParameters(p);
+            if (!p.encodings || p.encodings.length === 0) continue;
+            const next = { ...p };
+            next.encodings = p.encodings.map((e, i) =>
+                i === 0 ? { ...e, maxBitrate: 128000 } : { ...e }
+            );
+            await s.setParameters(next);
         }
     } catch (e) {
         florDevLog('florApplyRtcOpusVoiceTuning', e);
@@ -6676,6 +6935,7 @@ function createPeerConnection(remoteSocketId, isInitiator) {
             remoteVideo.id = `remote-${remoteSocketId}`;
             remoteVideo.className = 'flor-call-tile-video hidden';
             remoteVideo.autoplay = true;
+            remoteVideo.muted = false;
             remoteVideo.playsInline = true;
             remoteVideo.setAttribute('playsinline', '');
             remoteVideo.setAttribute('webkit-playsinline', '');
@@ -6695,6 +6955,7 @@ function createPeerConnection(remoteSocketId, isInitiator) {
         }
 
         if (event.streams && event.streams[0] && remoteVideo) {
+            remoteVideo.muted = false;
             remoteVideo.srcObject = event.streams[0];
             florTryPlayMediaElement(remoteVideo);
             florApplyRemoteParticipantAudio(remoteSocketId);
