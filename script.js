@@ -1741,14 +1741,19 @@ function initializeApp() {
         try {
             await florRefreshUserKeyCache();
             if (window.florE2ee) {
-                await window.florE2ee.init(florApi, token, async (userId) => {
-                    const uid = Number(userId);
-                    let keys = florUserKeyCache.get(uid);
-                    if (keys && keys.length) return keys;
-                    await florRefreshUserKeyCache();
-                    keys = florUserKeyCache.get(uid);
-                    return keys && keys.length ? keys : [];
-                });
+                await window.florE2ee.init(
+                    florApi,
+                    token,
+                    async (userId) => {
+                        const uid = Number(userId);
+                        let keys = florUserKeyCache.get(uid);
+                        if (keys && keys.length) return keys;
+                        await florRefreshUserKeyCache();
+                        keys = florUserKeyCache.get(uid);
+                        return keys && keys.length ? keys : [];
+                    },
+                    currentUser && currentUser.id != null ? Number(currentUser.id) : null
+                );
                 if (
                     typeof window.florE2ee.isActive === 'function' &&
                     !window.florE2ee.isActive() &&
@@ -3039,6 +3044,7 @@ async function initiateCall(friendId, type) {
         updateLocalCallParticipantUI();
         florStartOutgoingRingtone();
         florSyncDmVideoCallLayout();
+        requestAnimationFrame(() => void florEnterCallFullscreenForMobileVideo());
         
     } catch (error) {
         console.error('Error initiating call:', error);
@@ -3141,6 +3147,7 @@ async function acceptCall(caller, type) {
             createPeerConnection(caller.socketId, false);
         }
         florSyncDmVideoCallLayout();
+        requestAnimationFrame(() => void florEnterCallFullscreenForMobileVideo());
         
     } catch (error) {
         console.error('Error accepting call:', error);
@@ -6230,6 +6237,21 @@ async function florToggleCallFullscreen() {
         el.classList.add('fullscreen');
     }
     florUpdateCallFullscreenButton();
+}
+
+/** На телефоне видеозвонок сразу в полноэкранном режиме — иначе вёрстка «прижата» к верху и обрезана чёлкой */
+function florEnterCallFullscreenForMobileVideo() {
+    try {
+        if (typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 769px)').matches) {
+            return;
+        }
+        const el = document.getElementById('callInterface');
+        if (!el || el.classList.contains('hidden')) return;
+        const d = window.currentCallDetails;
+        if (!d || d.type !== 'video') return;
+        if (el.classList.contains('fullscreen') || florGetDocumentFullscreenElement() === el) return;
+        void florToggleCallFullscreen();
+    } catch (_) {}
 }
 
 function leaveVoiceChannel(force = false, opts) {

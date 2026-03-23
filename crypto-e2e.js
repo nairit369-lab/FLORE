@@ -187,6 +187,25 @@
     }
 
     let cachedGetPeerJwks = null;
+    /** id текущего пользователя — для ЛС: обёртки на все свои устройства и расшифровка с учётом ключей обеих сторон */
+    let cachedLocalUserId = null;
+
+    function jwkXYFingerprint(jwk) {
+        if (!jwk || typeof jwk.x !== 'string' || typeof jwk.y !== 'string') return '';
+        return `${jwk.x}|${jwk.y}`;
+    }
+
+    function dedupeJwks(list) {
+        const seen = new Set();
+        const out = [];
+        for (const j of list) {
+            const fp = jwkXYFingerprint(j);
+            if (!fp || seen.has(fp)) continue;
+            seen.add(fp);
+            out.push(j);
+        }
+        return out;
+    }
 
     async function getMyPrivateCryptoKey() {
         const privJwk = await getOrCreateIdentityPrivateJwk();
@@ -220,8 +239,10 @@
         } catch (e) {
             throw new Error('Не удалось загрузить ключи собеседника для шифрования');
         }
-        const list = flattenPeerIdentityJwksPayload(
-            Array.isArray(peerJwksRaw) ? peerJwksRaw : peerJwksRaw ? [peerJwksRaw] : []
+        const list = dedupeJwks(
+            flattenPeerIdentityJwksPayload(
+                Array.isArray(peerJwksRaw) ? peerJwksRaw : peerJwksRaw ? [peerJwksRaw] : []
+            )
         );
         if (!list.length) {
             throw new Error(
@@ -231,16 +252,42 @@
             );
         }
         const myPriv = await getMyPrivateCryptoKey();
+        const privJwk = await getOrCreateIdentityPrivateJwk();
+        const myPubJwk = await publicJwkFromPrivateJwk(privJwk);
+        const selfFp = jwkXYFingerprint(myPubJwk);
+
+        /** Обёртки для всех устройств собеседника + всех ваших других устройств (читать «свои» отправленные с ПК на телефоне) */
+        const wrapTargets = dedupeJwks([...list]);
+        if (cachedLocalUserId != null && Number.isFinite(Number(cachedLocalUserId))) {
+            try {
+                const mineRaw = await getPeerJwks(Number(cachedLocalUserId));
+                const mine = dedupeJwks(
+                    flattenPeerIdentityJwksPayload(
+                        Array.isArray(mineRaw) ? mineRaw : mineRaw ? [mineRaw] : []
+                    )
+                );
+                for (const j of mine) {
+                    if (jwkXYFingerprint(j) === selfFp) continue;
+                    wrapTargets.push(j);
+                }
+            } catch (_) {}
+        }
+
         const sessionRaw = crypto.getRandomValues(new Uint8Array(32));
         const sessionKey = await crypto.subtle.importKey('raw', sessionRaw, 'AES-GCM', false, ['encrypt']);
         const enc = new TextEncoder();
         const ivMsg = crypto.getRandomValues(new Uint8Array(12));
         const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: ivMsg }, sessionKey, enc.encode(text));
         const wraps = [];
-        for (const pj of list) {
-            const peerPub = await importPublicJwk(pj);
-            const aes = await deriveAesGcm256(myPriv, peerPub);
-            wraps.push(await encryptRawKeyWithAes(aes, sessionRaw));
+        for (const pj of wrapTargets) {
+            try {
+                const peerPub = await importPublicJwk(pj);
+                const aes = await deriveAesGcm256(myPriv, peerPub);
+                wraps.push(await encryptRawKeyWithAes(aes, sessionRaw));
+            } catch (_) {}
+        }
+        if (!wraps.length) {
+            throw new Error('Не удалось сформировать обёртки ключа сообщения');
         }
         return JSON.stringify({
             florE2ee: 2,
@@ -262,9 +309,20 @@
         } catch (_) {
             return '🔒 Не удалось расшифровать';
         }
-        const peerJwks = flattenPeerIdentityJwksPayload(
+        let peerJwks = flattenPeerIdentityJwksPayload(
             Array.isArray(peerJwksRaw) ? peerJwksRaw : peerJwksRaw ? [peerJwksRaw] : []
         );
+        if (cachedLocalUserId != null && Number.isFinite(Number(cachedLocalUserId))) {
+            try {
+                const selfRaw = await getPeerJwks(Number(cachedLocalUserId));
+                const selfList = flattenPeerIdentityJwksPayload(
+                    Array.isArray(selfRaw) ? selfRaw : selfRaw ? [selfRaw] : []
+                );
+                peerJwks = dedupeJwks([...peerJwks, ...selfList]);
+            } catch (_) {}
+        } else {
+            peerJwks = dedupeJwks(peerJwks);
+        }
         if (!peerJwks.length) return '🔒 Не удалось расшифровать (нет ключа собеседника)';
         const myPriv = await getMyPrivateCryptoKey();
         let o;
@@ -505,8 +563,10 @@
             },
             httpsHint:
                 'Шифрование в браузере доступно только по HTTPS (или localhost). Подключите сертификат на сервере — сообщения по HTTP идут без E2EE.',
-            async init(_florApi, _token, getPeerJwksFn) {
+            async init(_florApi, _token, getPeerJwksFn, localUserId) {
                 if (typeof getPeerJwksFn === 'function') cachedGetPeerJwks = getPeerJwksFn;
+                cachedLocalUserId =
+                    localUserId != null && Number.isFinite(Number(localUserId)) ? Number(localUserId) : null;
             },
             setPeerKeyResolver(fn) {
                 cachedGetPeerJwks = fn;
@@ -541,8 +601,10 @@
             return true;
         },
         httpsHint: '',
-        async init(florApi, token, getPeerJwksFn) {
+        async init(florApi, token, getPeerJwksFn, localUserId) {
             cachedGetPeerJwks = getPeerJwksFn;
+            cachedLocalUserId =
+                localUserId != null && Number.isFinite(Number(localUserId)) ? Number(localUserId) : null;
             await uploadPublicKey(florApi, token);
         },
         setPeerKeyResolver(fn) {
