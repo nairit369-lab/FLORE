@@ -1,0 +1,20 @@
+{
+  "appId": "com.flormessenger.webshell",
+  "productName": "FLOR Web",
+  "copyright": "Copyright FLOR MESSENGER",
+  "npmRebuild": false,
+  "directories": {
+    "output": "dist-shell"
+  },
+  "files": ["electron-shell-main.js", "package.json"],
+  "extraMetadata": {
+    "main": "electron-shell-main.js"
+  },
+  "win": {
+    "target": ["portable", "nsis"]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true
+  }
+}

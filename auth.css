@@ -19,6 +19,24 @@
     --flor-font: 'Outfit', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
 
+.flor-insecure-ctx-banner {
+    flex-shrink: 0;
+    margin: 0 0 12px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(220, 38, 38, 0.12), rgba(234, 88, 12, 0.1));
+    border: 1px solid rgba(220, 38, 38, 0.35);
+    color: var(--flor-text);
+    font-size: 13px;
+    line-height: 1.45;
+}
+.flor-insecure-ctx-banner code {
+    font-size: 0.88em;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.06);
+}
+
 body {
     font-family: var(--flor-font);
     min-height: 100vh;

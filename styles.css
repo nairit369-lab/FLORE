@@ -47,6 +47,25 @@
     --flor-mobile-tabbar-block: 104px;
 }
 
+.flor-insecure-ctx-banner {
+    position: relative;
+    z-index: 30000;
+    margin: 0;
+    padding: 12px 14px;
+    padding-top: max(12px, env(safe-area-inset-top, 0px));
+    background: linear-gradient(135deg, rgba(220, 38, 38, 0.14), rgba(234, 88, 12, 0.1));
+    border-bottom: 1px solid rgba(220, 38, 38, 0.35);
+    color: var(--flor-text);
+    font-size: 13px;
+    line-height: 1.45;
+}
+.flor-insecure-ctx-banner code {
+    font-size: 0.88em;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.06);
+}
+
 /* Call tiles: аватар скрываем полностью; видео — НЕ display:none, иначе Chromium часто не воспроизводит аудио WebRTC (голос без камеры). */
 .flor-call-tile-avatar.hidden {
     display: none !important;
@@ -2641,6 +2660,11 @@ html[data-theme='dark'] .voice-msg-btn:hover:not(:disabled) .voice-msg-btn__mic-
     height: 100%;
     object-fit: contain;
     background-color: #000;
+}
+
+/* Локальное превью: компенсация зеркала фронтальной камеры (класс ставит script.js). */
+.participant.participant--local.flor-local-preview-unmirror #localVideo {
+    transform: scaleX(-1);
 }
 
 .participant.minimized {

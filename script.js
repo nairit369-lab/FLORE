@@ -537,6 +537,7 @@ function updateLocalCallParticipantUI() {
         av.classList.remove('hidden');
         florFillAvatarEl(av, currentUser && currentUser.avatar, currentUser && currentUser.username);
     }
+    florSyncLocalVideoPreviewMirror();
 }
 
 function renderCallVoiceRoster(participants) {
@@ -1417,6 +1418,31 @@ function florVideoCaptureConstraints() {
         };
     }
     return { width: { ideal: 1280 }, height: { ideal: 720 } };
+}
+
+/**
+ * Селфи-камера часто показывает картинку «в зеркале» (лево и право перепутаны).
+ * Разворачиваем только локальное превью; поток в WebRTC не меняется.
+ * Не применяем при демонстрации экрана и для задней камеры (environment).
+ */
+function florSyncLocalVideoPreviewMirror() {
+    const tile = document.getElementById('localParticipantTile');
+    if (!tile) return;
+    if (screenStream) {
+        tile.classList.remove('flor-local-preview-unmirror');
+        return;
+    }
+    const track = localStream && localStream.getVideoTracks()[0];
+    if (!track || track.kind !== 'video' || track.readyState !== 'live') {
+        tile.classList.remove('flor-local-preview-unmirror');
+        return;
+    }
+    const settings = typeof track.getSettings === 'function' ? track.getSettings() : {};
+    const facing = settings.facingMode;
+    const unmirror =
+        facing === 'user' ||
+        (facing !== 'environment' && florUseRelaxedMediaConstraints());
+    tile.classList.toggle('flor-local-preview-unmirror', unmirror);
 }
 
 function florAudioCaptureConstraints() {
@@ -3032,6 +3058,7 @@ async function florAcquireMediaForDirectCall(type) {
             t.enabled = !muted;
         });
     }
+    florSyncLocalVideoPreviewMirror();
 }
 
 // Initiate call function
@@ -6189,6 +6216,7 @@ async function initializeMedia(opts) {
                 track.enabled = false;
             });
         }
+        florSyncLocalVideoPreviewMirror();
     } catch (error) {
         console.error('Error getting media devices:', error);
         throw error;
@@ -6506,6 +6534,7 @@ async function toggleScreenShare() {
         
         const localVideo = document.getElementById('localVideo');
         localVideo.srcObject = localStream;
+        florSyncLocalVideoPreviewMirror();
         
         updateCallButtons();
     } else {
@@ -6541,6 +6570,7 @@ async function toggleScreenShare() {
                 ...localStream.getAudioTracks()
             ]);
             localVideo.srcObject = mixedStream;
+            florSyncLocalVideoPreviewMirror();
             
             // Handle screen share ending
             screenTrack.addEventListener('ended', () => {

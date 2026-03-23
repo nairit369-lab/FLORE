@@ -13,7 +13,11 @@ uploads/
 
 # Сборка Electron
 dist/
+dist-shell/
 out/
+
+# Capacitor / Android (сгенерировано локально)
+android/
 
 # Логи и ОС
 *.log

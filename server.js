@@ -2207,6 +2207,12 @@ async function startFlorServer() {
             const local = HOST === '0.0.0.0' ? `${proto}://127.0.0.1:${PORT}` : `${proto}://${HOST}:${PORT}`;
             console.log(`FLOR MESSENGER listening on ${HOST}:${PORT} (${proto.toUpperCase()})`);
             console.log(`Open ${local}/login.html в браузере`);
+            if (!useHttps) {
+                console.warn(
+                    '[МОБИЛЬНЫЙ / ДЕМО] Браузер на телефоне не даст микрофон, камеру и WebRTC по http://IP (нужен secure context). ' +
+                        'Включите в .env: USE_HTTPS=true и FLOR_TLS_SAN=localhost,127.0.0.1,ВАШ_LAN_IP, перезапустите сервер и откройте https://IP:порт/login.html'
+                );
+            }
             resolve();
         });
     });

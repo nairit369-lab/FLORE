@@ -1,0 +1,13 @@
+{
+  "appId": "com.flormessenger.shell",
+  "appName": "FLOR",
+  "webDir": "www",
+  "server": {
+    "url": "https://127.0.0.1:3000/login.html",
+    "cleartext": true,
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}
