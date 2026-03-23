@@ -198,6 +198,12 @@ async function florRefreshUserKeyCache() {
     } catch (_) {}
 }
 
+/** Перед шифрованием ЛС — актуальные ключи всех устройств с сервера (иначе новый телефон не попадает в wraps). */
+async function florRefreshPeerKeysBeforeDmEncrypt() {
+    if (!window.florE2ee || typeof florE2ee.isActive !== 'function' || !florE2ee.isActive()) return;
+    await florRefreshUserKeyCache();
+}
+
 async function florFetchMembersForE2ee(serverId) {
     const r = await fetch(florApi(`/api/servers/${serverId}/members`), {
         headers: { Authorization: `Bearer ${token}` }
@@ -538,7 +544,7 @@ function renderCallVoiceRoster(participants) {
     const metaEl = document.getElementById('callVoiceMeta');
     if (!el) return;
     const list = Array.isArray(participants) ? participants : [];
-    if (metaEl) {
+    if (metaEl && activeVoiceRoomKey) {
         const n = list.length;
         metaEl.textContent =
             n === 0 ? 'Никого в комнате' : `${n} в комнате: ` + list.map((p) => p.username || '?').join(', ');
@@ -1615,7 +1621,16 @@ function florSyncDmVideoCallLayout() {
     if (!el) return;
     const d = window.currentCallDetails;
     const dmVideo = !!(d && d.type === 'video' && !activeVoiceRoomKey);
+    const dmDirect = !!(d && !activeVoiceRoomKey);
     el.classList.toggle('flor-call-shell--dm-video', dmVideo);
+    el.classList.toggle('flor-call-shell--dm-direct', dmDirect);
+}
+
+/** Подзаголовок в шапке звонка (не путать с ростером голосового канала) */
+function florSetCallVoiceMeta(text) {
+    const meta = document.getElementById('callVoiceMeta');
+    if (!meta) return;
+    meta.textContent = text == null || text === '' ? '—' : String(text);
 }
 
 function playSoftPing() {
@@ -2440,18 +2455,19 @@ function connectToSocketIO() {
 
         socket.on('call-queued', (data) => {
             if (!window.currentCallDetails || !window.currentCallDetails.isInitiator) return;
-            const el = document.querySelector('.call-channel-name');
-            if (el) {
-                el.textContent =
-                    (data && data.message) ||
-                    'Ожидаем, когда контакт появится в сети…';
-            }
+            const title = document.querySelector('.call-channel-name');
+            if (title) title.textContent = 'Ожидание в сети';
+            florSetCallVoiceMeta(
+                (data && data.message) ||
+                    'Собеседник сейчас не в приложении. Когда откроет FLOR — увидит входящий звонок (до 2 мин).'
+            );
         });
 
         socket.on('call-delivered', () => {
             if (!window.currentCallDetails || !window.currentCallDetails.isInitiator) return;
             const el = document.querySelector('.call-channel-name');
             if (el) el.textContent = 'Звонок…';
+            florSetCallVoiceMeta('Абонент в сети. Ждём ответа…');
         });
 
         socket.on('call-accepted', (data) => {
@@ -2462,6 +2478,7 @@ function connectToSocketIO() {
             }
             // When call is accepted, create peer connection
             document.querySelector('.call-channel-name').textContent = `Связь с ${data.from.username}`;
+            florSetCallVoiceMeta('Соединение установлено');
             if (data.from?.socketId) {
                 florVoicePeerMeta[data.from.socketId] = {
                     userId: data.from.id,
@@ -2988,7 +3005,8 @@ async function initiateCall(friendId, type) {
         
         // Update call header
         document.querySelector('.call-channel-name').textContent = 'Вызов…';
-        
+        florSetCallVoiceMeta('Отправляем запрос…');
+
         const localVideo = document.getElementById('localVideo');
         localVideo.srcObject = localStream;
         
@@ -3082,10 +3100,11 @@ async function acceptCall(caller, type) {
         florUpdateCallFullscreenButton();
         
         document.querySelector('.call-channel-name').textContent = `Звонок с ${caller.username}`;
-        
+        florSetCallVoiceMeta('Подключение…');
+
         const localVideo = document.getElementById('localVideo');
         localVideo.srcObject = localStream;
-        
+
         // Store call details
         window.currentCallDetails = {
             peerId: caller.socketId,
@@ -3184,6 +3203,7 @@ window.startDM = async function(friendId, friendUsername, friendAvatar) {
 
     document.getElementById('messageInput').placeholder = `Сообщение для @${friendUsername}`;
 
+    await florRefreshPeerKeysBeforeDmEncrypt();
     await loadDMHistory(friendId);
     syncServerHeaderMenuVisibility();
     florSyncDmChatHeaderControls();
@@ -3789,6 +3809,7 @@ async function sendMessage() {
         let payloadText = text;
         if (window.florE2ee) {
             try {
+                await florRefreshPeerKeysBeforeDmEncrypt();
                 payloadText = await florE2ee.encryptDmPlaintext(currentDMUserId, text);
             } catch (e) {
                 alert(e.message || 'Не удалось зашифровать сообщение');
@@ -4669,6 +4690,7 @@ async function florSendVoiceBlob(blob) {
             const line = `Голосовое: — ${fileData.url}`;
             let payloadText = line;
             if (window.florE2ee) {
+                await florRefreshPeerKeysBeforeDmEncrypt();
                 payloadText = await florE2ee.encryptDmPlaintext(currentDMUserId, line);
             }
             socket.emit('send-dm', {
@@ -6050,6 +6072,7 @@ async function joinVoiceChannel(channelId, displayLabel) {
 
     const nameEl = document.querySelector('.call-channel-name');
     if (nameEl) nameEl.textContent = displayLabel;
+    florSetCallVoiceMeta('Подключение к каналу…');
 
     try {
         await initializeMedia({ voice: true });
@@ -6459,7 +6482,9 @@ function updateCallButtons() {
     }
     
     if (toggleScreenBtn) {
-        toggleScreenBtn.classList.toggle('active', screenStream !== null);
+        const sharing = screenStream !== null;
+        toggleScreenBtn.classList.toggle('active', sharing);
+        toggleScreenBtn.classList.toggle('screen-active', sharing);
     }
 }
 

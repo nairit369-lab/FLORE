@@ -299,15 +299,17 @@
             <div id="remoteParticipants" class="flor-call-remote-tiles"></div>
         </div>
         <div class="call-controls-main">
-            <button type="button" id="toggleVideoBtn" class="call-control-btn" title="Камера">
-                <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M21 6.5L17 10.5V7C17 6.45 16.55 6 16 6H4C3.45 6 3 6.45 3 7V17C3 17.55 3.45 18 4 18H16C16.55 18 17 17.55 17 17V13.5L21 17.5V6.5Z"/></svg>
-            </button>
-            <button type="button" id="toggleAudioBtn" class="call-control-btn" title="Микрофон">
-                <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C10.895 2 10 2.895 10 4V12C10 13.105 10.895 14 12 14C13.105 14 14 13.105 14 12V4C14 2.895 13.105 2 12 2ZM19 10V12C19 15.866 15.866 19 12 19C8.134 19 5 15.866 5 12V10H3V12C3 16.418 6.269 20.099 10.5 20.856V24H13.5V20.856C17.731 20.099 21 16.418 21 12V10H19Z"/></svg>
-            </button>
-            <button type="button" id="toggleScreenBtn" class="call-control-btn" title="Экран">
-                <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M21 2H3C1.89 2 1 2.89 1 4V16C1 17.11 1.89 18 3 18H10V20H8V22H16V20H14V18H21C22.11 18 23 17.11 23 16V4C23 2.89 22.11 2 21 2ZM21 16H3V4H21V16Z"/></svg>
-            </button>
+            <div class="call-controls-bar" role="toolbar" aria-label="Управление звонком">
+                <button type="button" id="toggleVideoBtn" class="call-control-btn" title="Камера">
+                    <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M21 6.5L17 10.5V7C17 6.45 16.55 6 16 6H4C3.45 6 3 6.45 3 7V17C3 17.55 3.45 18 4 18H16C16.55 18 17 17.55 17 17V13.5L21 17.5V6.5Z"/></svg>
+                </button>
+                <button type="button" id="toggleAudioBtn" class="call-control-btn" title="Микрофон">
+                    <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C10.895 2 10 2.895 10 4V12C10 13.105 10.895 14 12 14C13.105 14 14 13.105 14 12V4C14 2.895 13.105 2 12 2ZM19 10V12C19 15.866 15.866 19 12 19C8.134 19 5 15.866 5 12V10H3V12C3 16.418 6.269 20.099 10.5 20.856V24H13.5V20.856C17.731 20.099 21 16.418 21 12V10H19Z"/></svg>
+                </button>
+                <button type="button" id="toggleScreenBtn" class="call-control-btn" title="Экран">
+                    <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M21 2H3C1.89 2 1 2.89 1 4V16C1 17.11 1.89 18 3 18H10V20H8V22H16V20H14V18H21C22.11 18 23 17.11 23 16V4C23 2.89 22.11 2 21 2ZM21 16H3V4H21V16Z"/></svg>
+                </button>
+            </div>
         </div>
     </div>
 

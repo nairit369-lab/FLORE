@@ -340,6 +340,32 @@
         }
     }
 
+    /** Синхронно с server.js parseChannelKeyWrapEntries */
+    function parseChannelKeyWrapEntries(wrapText, fallbackFromUserId) {
+        if (wrapText == null || typeof wrapText !== 'string') return [];
+        const t = wrapText.trim();
+        if (!t) return [];
+        try {
+            const o = JSON.parse(t);
+            if (o && o.florE2eeChWrapBundle === 1 && Array.isArray(o.items)) {
+                return o.items
+                    .filter((x) => x != null && x.from != null && typeof x.w === 'string')
+                    .map((x) => ({
+                        fromUserId: Number(x.from),
+                        wrapStr: String(x.w).trim()
+                    }))
+                    .filter((x) => Number.isFinite(x.fromUserId) && x.wrapStr);
+            }
+            if (o && Number(o.florWrap) === 1 && o.iv && o.ct && fallbackFromUserId != null) {
+                const fid = Number(fallbackFromUserId);
+                if (Number.isFinite(fid)) return [{ fromUserId: fid, wrapStr: t }];
+            }
+        } catch (_) {}
+        const fid = fallbackFromUserId != null ? Number(fallbackFromUserId) : NaN;
+        if (Number.isFinite(fid)) return [{ fromUserId: fid, wrapStr: t }];
+        return [];
+    }
+
     async function ensureChannelKey(channelId, serverId, florApi, token, userId, fetchMembersJson) {
         const cacheKey = CH_KEY_PREFIX + channelId;
         const existing = sessionStorage.getItem(cacheKey);
@@ -349,33 +375,40 @@
         const wrapRes = await fetch(florApi(`/api/channels/${channelId}/e2e-wrap`), { headers });
         if (wrapRes.ok) {
             const j = await wrapRes.json();
-            const fromId = j.fromUserId;
-            let peerList = [];
-            try {
-                const rawList = await cachedGetPeerJwks(fromId);
-                peerList = flattenPeerIdentityJwksPayload(
-                    Array.isArray(rawList) ? rawList : rawList ? [rawList] : []
-                );
-            } catch (_) {
-                peerList = [];
-            }
-            if (!peerList.length) {
-                throw new Error('Нет публичного ключа того, кто выдал ключ канала. Обновите список участников.');
+            const entries = parseChannelKeyWrapEntries(
+                typeof j.wrap === 'string' ? j.wrap : '',
+                j.fromUserId != null ? j.fromUserId : null
+            );
+            if (!entries.length) {
+                throw new Error('Некорректная обёртка ключа канала. Обновите страницу.');
             }
             const myPriv = await getMyPrivateCryptoKey();
             let raw = null;
             let lastErr = null;
-            for (const peerJwk of peerList) {
+            for (const { fromUserId, wrapStr } of entries) {
+                let peerList = [];
                 try {
-                    const aes = await deriveAesGcm256(myPriv, await importPublicJwk(peerJwk));
-                    const r = await decryptRawKeyWithAes(aes, j.wrap);
-                    if (r.length === 32) {
-                        raw = r;
-                        break;
-                    }
-                } catch (e) {
-                    lastErr = e;
+                    const rawList = await cachedGetPeerJwks(fromUserId);
+                    peerList = flattenPeerIdentityJwksPayload(
+                        Array.isArray(rawList) ? rawList : rawList ? [rawList] : []
+                    );
+                } catch (_) {
+                    peerList = [];
                 }
+                if (!peerList.length) continue;
+                for (const peerJwk of peerList) {
+                    try {
+                        const aes = await deriveAesGcm256(myPriv, await importPublicJwk(peerJwk));
+                        const r = await decryptRawKeyWithAes(aes, wrapStr);
+                        if (r.length === 32) {
+                            raw = r;
+                            break;
+                        }
+                    } catch (e) {
+                        lastErr = e;
+                    }
+                }
+                if (raw) break;
             }
             if (!raw) {
                 throw new Error(
@@ -410,12 +443,15 @@
         for (const m of members) {
             if (m.id === userId) continue;
             const jwks = identityJwksFromMemberRow(m);
-            const pubJwk = jwks[0] || m.identityPublicJwk;
-            if (!pubJwk) continue;
-            const pub = await importPublicJwk(pubJwk);
-            const aes = await deriveAesGcm256(myPriv, pub);
-            const wrap = await encryptRawKeyWithAes(aes, keyRaw);
-            wraps.push({ userId: m.id, wrap });
+            if (!jwks.length) continue;
+            for (const pubJwk of jwks) {
+                try {
+                    const pub = await importPublicJwk(pubJwk);
+                    const aes = await deriveAesGcm256(myPriv, pub);
+                    const wrap = await encryptRawKeyWithAes(aes, keyRaw);
+                    wraps.push({ userId: m.id, wrap });
+                } catch (_) {}
+            }
         }
         if (wraps.length > 0) {
             const post = await fetch(florApi(`/api/channels/${channelId}/e2e-wraps`), {
@@ -438,22 +474,20 @@
         if (!b64) return;
         const keyRaw = b64ToBytes(b64);
         const headers = { Authorization: `Bearer ${token}` };
-        const r = await fetch(florApi(`/api/channels/${channelId}/e2e-wrap-recipients`), { headers });
-        if (!r.ok) return;
-        const { userIds = [] } = await r.json();
-        const wrapped = new Set(userIds);
         const members = await fetchMembersJson(serverId);
         const myPriv = await getMyPrivateCryptoKey();
         const wraps = [];
         for (const m of members) {
             if (m.id === userId) continue;
-            if (wrapped.has(m.id)) continue;
             const jwks = identityJwksFromMemberRow(m);
-            const pubJwk = jwks[0] || m.identityPublicJwk;
-            if (!pubJwk) continue;
-            const pub = await importPublicJwk(pubJwk);
-            const aes = await deriveAesGcm256(myPriv, pub);
-            wraps.push({ userId: m.id, wrap: await encryptRawKeyWithAes(aes, keyRaw) });
+            if (!jwks.length) continue;
+            for (const pubJwk of jwks) {
+                try {
+                    const pub = await importPublicJwk(pubJwk);
+                    const aes = await deriveAesGcm256(myPriv, pub);
+                    wraps.push({ userId: m.id, wrap: await encryptRawKeyWithAes(aes, keyRaw) });
+                } catch (_) {}
+            }
         }
         if (!wraps.length) return;
         await fetch(florApi(`/api/channels/${channelId}/e2e-wraps`), {

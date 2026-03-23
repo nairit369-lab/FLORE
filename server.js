@@ -214,6 +214,64 @@ function flattenStoredIdentityJwksPayload(p) {
     return out;
 }
 
+/**
+ * Разбор обёртки ключа канала: одна строка florWrap или бандл с разными from (несколько устройств / ретрансляторов).
+ * Клиент передаёт fallbackFromUserId из колонки from_user_id для старых записей.
+ */
+function parseChannelKeyWrapEntries(wrapText, fallbackFromUserId) {
+    if (wrapText == null || typeof wrapText !== 'string') return [];
+    const t = wrapText.trim();
+    if (!t) return [];
+    try {
+        const o = JSON.parse(t);
+        if (o && o.florE2eeChWrapBundle === 1 && Array.isArray(o.items)) {
+            return o.items
+                .filter((x) => x != null && x.from != null && typeof x.w === 'string')
+                .map((x) => ({
+                    fromUserId: Number(x.from),
+                    wrapStr: String(x.w).trim()
+                }))
+                .filter((x) => Number.isFinite(x.fromUserId) && x.wrapStr);
+        }
+        if (o && Number(o.florWrap) === 1 && o.iv && o.ct && fallbackFromUserId != null) {
+            const fid = Number(fallbackFromUserId);
+            if (Number.isFinite(fid)) return [{ fromUserId: fid, wrapStr: t }];
+        }
+    } catch (_) {}
+    const fid = fallbackFromUserId != null ? Number(fallbackFromUserId) : NaN;
+    if (Number.isFinite(fid)) return [{ fromUserId: fid, wrapStr: t }];
+    return [];
+}
+
+function mergeChannelKeyWrapEntry(existingText, newFromUserId, newWrapStr, existingRowFromUserId) {
+    const nf = Number(newFromUserId);
+    const nw = typeof newWrapStr === 'string' ? newWrapStr.trim() : '';
+    if (!Number.isFinite(nf) || !nw) {
+        return existingText != null ? String(existingText) : '';
+    }
+    const seen = new Set();
+    const out = [];
+    const push = (from, w) => {
+        const ws = typeof w === 'string' ? w.trim() : '';
+        if (!Number.isFinite(from) || !ws) return;
+        const k = `${from}\0${ws}`;
+        if (seen.has(k)) return;
+        seen.add(k);
+        out.push({ fromUserId: from, wrapStr: ws });
+    };
+    parseChannelKeyWrapEntries(
+        existingText != null ? String(existingText) : '',
+        existingRowFromUserId != null ? Number(existingRowFromUserId) : null
+    ).forEach((e) => push(e.fromUserId, e.wrapStr));
+    push(nf, nw);
+    if (out.length === 0) return nw;
+    if (out.length === 1) return out[0].wrapStr;
+    return JSON.stringify({
+        florE2eeChWrapBundle: 1,
+        items: out.map((e) => ({ from: e.fromUserId, w: e.wrapStr }))
+    });
+}
+
 /** Все зарегистрированные публичные ключи устройств (ECDH P-256) */
 function mapUserIdentityJwks(row) {
     if (!row || !row.identity_public_jwk) return [];
@@ -1260,7 +1318,9 @@ app.post('/api/channels/:channelId/e2e-wraps', authenticateToken, async (req, re
             const wrap = typeof w.wrap === 'string' ? w.wrap.trim() : '';
             if (Number.isNaN(uid) || !wrap || wrap.length > 65536) continue;
             if (!(await serverDB.isMember(srvId, uid))) continue;
-            await channelKeyWrapDB.upsert(channelId, uid, fromUid, wrap);
+            const prev = await channelKeyWrapDB.getForUser(channelId, uid);
+            const merged = mergeChannelKeyWrapEntry(prev && prev.wrap, fromUid, wrap, prev && prev.from_user_id);
+            await channelKeyWrapDB.upsert(channelId, uid, fromUid, merged);
             n += 1;
         }
         res.json({ ok: true, saved: n });
@@ -1992,7 +2052,7 @@ io.on('connection', async (socket) => {
                 });
                 socket.emit('call-queued', {
                     message:
-                        'Собеседник сейчас не в приложении. Когда зайдёт — увидит входящий звонок (до 2 мин).'
+                        'Собеседник сейчас не в приложении. Когда откроет FLOR — увидит входящий звонок (до 2 мин).'
                 });
             }
         } catch (e) {
