@@ -1615,6 +1615,31 @@ function florResetCallRingAndJoinSfx() {
     florRemoteJoinSfxDone.clear();
 }
 
+/** Обновить аватар в «чипе» шапки (режим Meet, только видео ЛС) */
+function florRefreshMeetCallHeader() {
+    const shell = document.getElementById('callInterface');
+    if (!shell || !shell.classList.contains('flor-call-shell--dm-video')) return;
+    const nameEl = shell.querySelector('.call-channel-name');
+    const av = document.getElementById('callMeetPeerAvatar');
+    if (!nameEl || !av) return;
+    const d = window.currentCallDetails;
+    let avatar = d && d.remoteAvatar != null ? d.remoteAvatar : null;
+    let uname = d && d.remoteUsername ? String(d.remoteUsername) : '';
+    const pids = typeof peerConnections === 'object' && peerConnections ? Object.keys(peerConnections) : [];
+    const sid = (d && d.peerId) || (pids.length === 1 ? pids[0] : pids[0]);
+    if (sid && florVoicePeerMeta[sid]) {
+        const m = florVoicePeerMeta[sid];
+        if (m.username) uname = m.username;
+        if (m.avatar != null) avatar = m.avatar;
+    }
+    const cur = (nameEl.textContent || '').trim();
+    const locked = cur === 'Ожидание в сети';
+    if (!locked && uname) {
+        nameEl.textContent = uname;
+    }
+    florFillAvatarEl(av, avatar, uname || cur || '?');
+}
+
 /** Горизонтальная сетка только для видеозвонка ЛС (не голосовой канал сервера) */
 function florSyncDmVideoCallLayout() {
     const el = document.getElementById('callInterface');
@@ -1624,6 +1649,7 @@ function florSyncDmVideoCallLayout() {
     const dmDirect = !!(d && !activeVoiceRoomKey);
     el.classList.toggle('flor-call-shell--dm-video', dmVideo);
     el.classList.toggle('flor-call-shell--dm-direct', dmDirect);
+    florRefreshMeetCallHeader();
 }
 
 /** Подзаголовок в шапке звонка (не путать с ростером голосового канала) */
@@ -2482,7 +2508,7 @@ function connectToSocketIO() {
                 florPlayCallSfx('join');
             }
             // When call is accepted, create peer connection
-            document.querySelector('.call-channel-name').textContent = `Связь с ${data.from.username}`;
+            document.querySelector('.call-channel-name').textContent = data.from.username;
             florSetCallVoiceMeta('Соединение установлено');
             if (data.from?.socketId) {
                 florVoicePeerMeta[data.from.socketId] = {
@@ -2491,6 +2517,12 @@ function connectToSocketIO() {
                     avatar: data.from.avatar
                 };
             }
+            if (window.currentCallDetails) {
+                window.currentCallDetails.remoteUsername = data.from.username;
+                window.currentCallDetails.remoteAvatar = data.from.avatar;
+                window.currentCallDetails.peerId = data.from.socketId;
+            }
+            florRefreshMeetCallHeader();
 
             // Create peer connection as initiator
             if (!peerConnections[data.from.socketId]) {
@@ -2676,13 +2708,17 @@ function createFriendItem(friend) {
     bAu.className = 'friend-action-btn audio-call';
     bAu.title = 'Аудиозвонок';
     bAu.textContent = '📞';
-    bAu.addEventListener('click', () => initiateCall(friend.id, 'audio'));
+    bAu.addEventListener('click', () =>
+        initiateCall(friend.id, 'audio', { username: friend.username, avatar: friend.avatar })
+    );
     const bVi = document.createElement('button');
     bVi.type = 'button';
     bVi.className = 'friend-action-btn video-call';
     bVi.title = 'Видеозвонок';
     bVi.textContent = '📹';
-    bVi.addEventListener('click', () => initiateCall(friend.id, 'video'));
+    bVi.addEventListener('click', () =>
+        initiateCall(friend.id, 'video', { username: friend.username, avatar: friend.avatar })
+    );
     const bRm = document.createElement('button');
     bRm.type = 'button';
     bRm.className = 'friend-action-btn remove';
@@ -2999,7 +3035,18 @@ async function florAcquireMediaForDirectCall(type) {
 }
 
 // Initiate call function
-async function initiateCall(friendId, type) {
+async function initiateCall(friendId, type, peerDisplay) {
+    peerDisplay = peerDisplay || {};
+    let remoteUsername = peerDisplay.username;
+    let remoteAvatar = peerDisplay.avatar;
+    if (
+        (remoteUsername == null || remoteUsername === '') &&
+        window.florLastDmPeer &&
+        Number(window.florLastDmPeer.id) === Number(friendId)
+    ) {
+        remoteUsername = window.florLastDmPeer.username;
+        remoteAvatar = window.florLastDmPeer.avatar;
+    }
     try {
         await florAcquireMediaForDirectCall(type);
 
@@ -3009,7 +3056,7 @@ async function initiateCall(friendId, type) {
         florUpdateCallFullscreenButton();
         
         // Update call header
-        document.querySelector('.call-channel-name').textContent = 'Вызов…';
+        document.querySelector('.call-channel-name').textContent = remoteUsername || 'Вызов…';
         florSetCallVoiceMeta('Отправляем запрос…');
 
         const localVideo = document.getElementById('localVideo');
@@ -3020,7 +3067,9 @@ async function initiateCall(friendId, type) {
             friendId: friendId,
             type: type,
             isInitiator: true,
-            originalType: type
+            originalType: type,
+            remoteUsername: remoteUsername || null,
+            remoteAvatar: remoteAvatar != null ? remoteAvatar : null
         };
         
         // Emit call request via socket
@@ -3105,7 +3154,7 @@ async function acceptCall(caller, type) {
         callInterface.classList.remove('hidden');
         florUpdateCallFullscreenButton();
         
-        document.querySelector('.call-channel-name').textContent = `Звонок с ${caller.username}`;
+        document.querySelector('.call-channel-name').textContent = caller.username || 'Звонок';
         florSetCallVoiceMeta('Подключение…');
 
         const localVideo = document.getElementById('localVideo');
@@ -3116,7 +3165,9 @@ async function acceptCall(caller, type) {
             peerId: caller.socketId,
             type: type,
             isInitiator: false,
-            originalType: type
+            originalType: type,
+            remoteUsername: caller.username || null,
+            remoteAvatar: caller.avatar != null ? caller.avatar : null
         };
         florVoicePeerMeta[caller.socketId] = {
             userId: caller.id,
@@ -3147,6 +3198,7 @@ async function acceptCall(caller, type) {
             createPeerConnection(caller.socketId, false);
         }
         florSyncDmVideoCallLayout();
+        florRefreshMeetCallHeader();
         requestAnimationFrame(() => void florEnterCallFullscreenForMobileVideo());
         
     } catch (error) {
@@ -3166,6 +3218,11 @@ function rejectCall(caller) {
 }
 
 window.startDM = async function(friendId, friendUsername, friendAvatar) {
+    window.florLastDmPeer = {
+        id: friendId,
+        username: friendUsername,
+        avatar: friendAvatar
+    };
     currentView = 'dm';
     currentDMUserId = friendId;
     currentServerId = null;
@@ -6336,6 +6393,18 @@ function initializeCallControls() {
         }
         leaveVoiceChannel(true); // Force leave on button click
     });
+
+    document.getElementById('callHangupBarBtn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeCallBtn?.click();
+    });
+    document.getElementById('callHangupBarBtn')?.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    document.getElementById('florCallMeetBackBtn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void florToggleCallFullscreen();
+    });
+    document.getElementById('florCallMeetBackBtn')?.addEventListener('mousedown', (e) => e.stopPropagation());
     
     toggleVideoBtn.addEventListener('click', () => {
         void toggleVideo();
@@ -6519,6 +6588,7 @@ function initializeDraggableCallWindow() {
    callHeader.addEventListener('mousedown', (e) => {
        if (e.target.closest('button')) return;
        if (callInterface.classList.contains('fullscreen')) return;
+       if (callInterface.classList.contains('flor-call-shell--dm-video')) return;
        if (florGetDocumentFullscreenElement() === callInterface) return;
        isDragging = true;
        offsetX = e.clientX - callInterface.offsetLeft;
@@ -7032,6 +7102,7 @@ function createPeerConnection(remoteSocketId, isInitiator) {
             event.track.addEventListener('ended', syncVideoVisibility);
             syncVideoVisibility();
         }
+        florRefreshMeetCallHeader();
     };
 
     // Create offer if initiator with modern constraints
