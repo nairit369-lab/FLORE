@@ -16,6 +16,8 @@ function initializeDatabase() {
                 password TEXT NOT NULL,
                 avatar TEXT,
                 status TEXT DEFAULT 'Online',
+                email_verified INTEGER DEFAULT 0,
+                email_login_alerts INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         `);
@@ -128,6 +130,55 @@ function initializeDatabase() {
             )
         `);
 
+        db.run(`
+            CREATE TABLE IF NOT EXISTS server_bans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                reason TEXT,
+                created_by INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (server_id) REFERENCES servers(id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (created_by) REFERENCES users(id),
+                UNIQUE(server_id, user_id)
+            )
+        `);
+
+        db.run(`
+            CREATE TABLE IF NOT EXISTS moderation_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                reporter_id INTEGER NOT NULL,
+                server_id INTEGER,
+                target_type TEXT NOT NULL,
+                target_id INTEGER,
+                reason TEXT NOT NULL,
+                details TEXT,
+                status TEXT DEFAULT 'open',
+                reviewed_by INTEGER,
+                reviewed_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (reporter_id) REFERENCES users(id),
+                FOREIGN KEY (reviewed_by) REFERENCES users(id)
+            )
+        `);
+
+        db.run(`
+            CREATE TABLE IF NOT EXISTS server_invites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id INTEGER NOT NULL,
+                code TEXT UNIQUE NOT NULL,
+                created_by INTEGER NOT NULL,
+                revoked INTEGER DEFAULT 0,
+                uses_count INTEGER DEFAULT 0,
+                last_used_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                revoked_at DATETIME,
+                FOREIGN KEY (server_id) REFERENCES servers(id),
+                FOREIGN KEY (created_by) REFERENCES users(id)
+            )
+        `);
+
         // Friends table
         db.run(`
             CREATE TABLE IF NOT EXISTS friends (
@@ -174,10 +225,13 @@ function flattenIdentityJwksFromDbPayload(p) {
 
 // User operations
 const userDB = {
-    create: (username, email, hashedPassword) => {
+    create: (username, email, hashedPassword, options = {}) => {
+        const emailVerified = options.emailVerified ? 1 : 0;
+        const emailLoginAlerts = options.emailLoginAlerts ? 1 : 0;
         return new Promise((resolve, reject) => {
-            const sql = 'INSERT INTO users (username, email, password) VALUES (?, ?, ?)';
-            db.run(sql, [username, email, hashedPassword], function(err) {
+            const sql =
+                'INSERT INTO users (username, email, password, email_verified, email_login_alerts) VALUES (?, ?, ?, ?, ?)';
+            db.run(sql, [username, email, hashedPassword, emailVerified, emailLoginAlerts], function(err) {
                 if (err) reject(err);
                 else resolve({ id: this.lastID, username, email });
             });
@@ -328,17 +382,43 @@ const userDB = {
                 else resolve();
             });
         });
+    },
+
+    updateEmailSecurity: (id, patch) => {
+        const parts = [];
+        const vals = [];
+        if (patch.email_verified !== undefined) {
+            parts.push('email_verified = ?');
+            vals.push(patch.email_verified ? 1 : 0);
+        }
+        if (patch.email_login_alerts !== undefined) {
+            parts.push('email_login_alerts = ?');
+            vals.push(patch.email_login_alerts ? 1 : 0);
+        }
+        if (!parts.length) return Promise.resolve();
+        vals.push(id);
+        return new Promise((resolve, reject) => {
+            db.run(`UPDATE users SET ${parts.join(', ')} WHERE id = ?`, vals, function (err) {
+                if (err) reject(err);
+                else resolve({ changes: this.changes });
+            });
+        });
     }
 };
 
 // Message operations
 const messageDB = {
-    create: (content, userId, channelId) => {
+    create: (content, userId, channelId, replyToId = null) => {
         return new Promise((resolve, reject) => {
-            const sql = 'INSERT INTO messages (content, user_id, channel_id) VALUES (?, ?, ?)';
-            db.run(sql, [content, userId, channelId], function(err) {
+            const rid = replyToId == null || replyToId === '' ? null : parseInt(String(replyToId), 10);
+            const hasReply = rid != null && !Number.isNaN(rid);
+            const sql = hasReply
+                ? 'INSERT INTO messages (content, user_id, channel_id, reply_to_id) VALUES (?, ?, ?, ?)'
+                : 'INSERT INTO messages (content, user_id, channel_id) VALUES (?, ?, ?)';
+            const params = hasReply ? [content, userId, channelId, rid] : [content, userId, channelId];
+            db.run(sql, params, function (err) {
                 if (err) reject(err);
-                else resolve({ id: this.lastID, content, userId, channelId });
+                else resolve({ id: this.lastID, content, userId, channelId, replyToId: hasReply ? rid : null });
             });
         });
     },
@@ -346,11 +426,16 @@ const messageDB = {
     getByChannel: (channelId, limit = 50) => {
         return new Promise((resolve, reject) => {
             const sql = `
-                SELECT m.*, u.username, u.avatar 
-                FROM messages m 
-                JOIN users u ON m.user_id = u.id 
-                WHERE m.channel_id = ? 
-                ORDER BY m.created_at DESC 
+                SELECT
+                    m.id, m.content, m.user_id, m.channel_id, m.created_at, m.reply_to_id,
+                    u.username, u.avatar,
+                    ru.username AS reply_to_username, rm.content AS reply_to_content
+                FROM messages m
+                JOIN users u ON m.user_id = u.id
+                LEFT JOIN messages rm ON m.reply_to_id = rm.id
+                LEFT JOIN users ru ON rm.user_id = ru.id
+                WHERE m.channel_id = ?
+                ORDER BY m.created_at DESC
                 LIMIT ?
             `;
             db.all(sql, [channelId, limit], (err, rows) => {
@@ -383,21 +468,153 @@ const messageDB = {
         });
     },
 
+    getByIdWithReply: (messageId) => {
+        return new Promise((resolve, reject) => {
+            const mid = parseInt(messageId, 10);
+            if (Number.isNaN(mid)) {
+                resolve(null);
+                return;
+            }
+            const sql = `
+                SELECT
+                    m.id, m.content, m.user_id, m.channel_id, m.created_at, m.reply_to_id,
+                    u.username, u.avatar,
+                    ru.username AS reply_to_username, rm.content AS reply_to_content
+                FROM messages m
+                JOIN users u ON m.user_id = u.id
+                LEFT JOIN messages rm ON m.reply_to_id = rm.id
+                LEFT JOIN users ru ON rm.user_id = ru.id
+                WHERE m.id = ?
+            `;
+            db.get(sql, [mid], (err, row) => {
+                if (err) reject(err);
+                else resolve(row || null);
+            });
+        });
+    },
+
     deleteOwn: (messageId, userId) => {
         return new Promise((resolve, reject) => {
-            db.run('DELETE FROM reactions WHERE message_id = ?', [messageId], (e1) => {
-                if (e1) {
-                    reject(e1);
-                    return;
+            const mid = parseInt(messageId, 10);
+            db.run('UPDATE messages SET reply_to_id = NULL WHERE reply_to_id = ?', [mid], () => {
+                db.run('DELETE FROM channel_pins WHERE message_id = ?', [mid], () => {
+                    db.run('DELETE FROM reactions WHERE message_id = ?', [mid], (e1) => {
+                        if (e1) {
+                            reject(e1);
+                            return;
+                        }
+                        db.run(
+                            'DELETE FROM messages WHERE id = ? AND user_id = ?',
+                            [mid, userId],
+                            function (err) {
+                                if (err) reject(err);
+                                else resolve({ changes: this.changes });
+                            }
+                        );
+                    });
+                });
+            });
+        });
+    }
+};
+
+const FLOR_MAX_CHANNEL_PINS = 5;
+const FLOR_MAX_DM_PINS = 3;
+
+const pinDB = {
+    countChannelPins: (channelId) => {
+        return new Promise((resolve, reject) => {
+            db.get(
+                'SELECT COUNT(1) AS c FROM channel_pins WHERE channel_id = ?',
+                [channelId],
+                (err, row) => {
+                    if (err) reject(err);
+                    else resolve(row && row.c != null ? Number(row.c) : 0);
                 }
-                db.run(
-                    'DELETE FROM messages WHERE id = ? AND user_id = ?',
-                    [messageId, userId],
-                    function (err) {
-                        if (err) reject(err);
-                        else resolve({ changes: this.changes });
-                    }
-                );
+            );
+        });
+    },
+
+    addChannelPin: (channelId, messageId, pinnedByUserId) => {
+        return new Promise((resolve, reject) => {
+            const sql =
+                'INSERT INTO channel_pins (channel_id, message_id, pinned_by) VALUES (?, ?, ?)';
+            db.run(sql, [channelId, messageId, pinnedByUserId], function (err) {
+                if (err) reject(err);
+                else resolve({ id: this.lastID });
+            });
+        });
+    },
+
+    removeChannelPin: (channelId, messageId) => {
+        return new Promise((resolve, reject) => {
+            db.run(
+                'DELETE FROM channel_pins WHERE channel_id = ? AND message_id = ?',
+                [channelId, messageId],
+                function (err) {
+                    if (err) reject(err);
+                    else resolve({ changes: this.changes });
+                }
+            );
+        });
+    },
+
+    listChannelPins: (channelId) => {
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT cp.message_id, cp.pinned_by, cp.created_at,
+                    m.content, m.user_id, u.username,
+                    u.avatar
+                FROM channel_pins cp
+                JOIN messages m ON cp.message_id = m.id
+                JOIN users u ON m.user_id = u.id
+                WHERE cp.channel_id = ?
+                ORDER BY cp.created_at ASC
+            `;
+            db.all(sql, [channelId], (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows || []);
+            });
+        });
+    },
+
+    addDmPin: (messageId, pinnedByUserId) => {
+        return new Promise((resolve, reject) => {
+            db.run(
+                'INSERT INTO dm_pins (message_id, pinned_by) VALUES (?, ?)',
+                [messageId, pinnedByUserId],
+                function (err) {
+                    if (err) reject(err);
+                    else resolve({ id: this.lastID });
+                }
+            );
+        });
+    },
+
+    removeDmPin: (messageId) => {
+        return new Promise((resolve, reject) => {
+            db.run('DELETE FROM dm_pins WHERE message_id = ?', [messageId], function (err) {
+                if (err) reject(err);
+                else resolve({ changes: this.changes });
+            });
+        });
+    },
+
+    listDmPinsForPeerPair: (userA, userB) => {
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT dp.message_id, dp.pinned_by, dp.created_at,
+                    dm.content, dm.sender_id, u.username, u.avatar
+                FROM dm_pins dp
+                JOIN direct_messages dm ON dp.message_id = dm.id
+                JOIN users u ON dm.sender_id = u.id
+                WHERE (dm.sender_id = ? AND dm.receiver_id = ?)
+                   OR (dm.sender_id = ? AND dm.receiver_id = ?)
+                ORDER BY dp.created_at ASC
+            `;
+            db.all(sql, [userA, userB, userB, userA], (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows || []);
             });
         });
     }
@@ -548,12 +765,17 @@ const channelDB = {
 
 // Direct message operations
 const dmDB = {
-    create: (content, senderId, receiverId) => {
+    create: (content, senderId, receiverId, replyToId = null) => {
         return new Promise((resolve, reject) => {
-            const sql = 'INSERT INTO direct_messages (content, sender_id, receiver_id) VALUES (?, ?, ?)';
-            db.run(sql, [content, senderId, receiverId], function(err) {
+            const rid = replyToId == null || replyToId === '' ? null : parseInt(String(replyToId), 10);
+            const hasReply = rid != null && !Number.isNaN(rid);
+            const sql = hasReply
+                ? 'INSERT INTO direct_messages (content, sender_id, receiver_id, reply_to_id) VALUES (?, ?, ?, ?)'
+                : 'INSERT INTO direct_messages (content, sender_id, receiver_id) VALUES (?, ?, ?)';
+            const params = hasReply ? [content, senderId, receiverId, rid] : [content, senderId, receiverId];
+            db.run(sql, params, function (err) {
                 if (err) reject(err);
-                else resolve({ id: this.lastID, content, senderId, receiverId });
+                else resolve({ id: this.lastID, content, senderId, receiverId, replyToId: hasReply ? rid : null });
             });
         });
     },
@@ -561,9 +783,14 @@ const dmDB = {
     getConversation: (userId1, userId2, limit = 50) => {
         return new Promise((resolve, reject) => {
             const sql = `
-                SELECT dm.*, u.username, u.avatar
+                SELECT
+                    dm.id, dm.content, dm.sender_id, dm.receiver_id, dm.read, dm.created_at, dm.reply_to_id,
+                    u.username, u.avatar,
+                    rs.username AS reply_to_username, rdm.content AS reply_to_content
                 FROM direct_messages dm
                 LEFT JOIN users u ON dm.sender_id = u.id
+                LEFT JOIN direct_messages rdm ON dm.reply_to_id = rdm.id
+                LEFT JOIN users rs ON rdm.sender_id = rs.id
                 WHERE (dm.sender_id = ? AND dm.receiver_id = ?)
                    OR (dm.sender_id = ? AND dm.receiver_id = ?)
                 ORDER BY dm.created_at DESC
@@ -579,6 +806,31 @@ const dmDB = {
     getById: (id) => {
         return new Promise((resolve, reject) => {
             db.get('SELECT * FROM direct_messages WHERE id = ?', [id], (err, row) => {
+                if (err) reject(err);
+                else resolve(row || null);
+            });
+        });
+    },
+
+    getByIdWithReply: (id) => {
+        return new Promise((resolve, reject) => {
+            const mid = parseInt(id, 10);
+            if (Number.isNaN(mid)) {
+                resolve(null);
+                return;
+            }
+            const sql = `
+                SELECT
+                    dm.id, dm.content, dm.sender_id, dm.receiver_id, dm.read, dm.created_at, dm.reply_to_id,
+                    u.username, u.avatar,
+                    rs.username AS reply_to_username, rdm.content AS reply_to_content
+                FROM direct_messages dm
+                LEFT JOIN users u ON dm.sender_id = u.id
+                LEFT JOIN direct_messages rdm ON dm.reply_to_id = rdm.id
+                LEFT JOIN users rs ON rdm.sender_id = rs.id
+                WHERE dm.id = ?
+            `;
+            db.get(sql, [mid], (err, row) => {
                 if (err) reject(err);
                 else resolve(row || null);
             });
@@ -624,14 +876,19 @@ const dmDB = {
 
     deleteOwnMessage: (messageId, senderId) => {
         return new Promise((resolve, reject) => {
-            db.run(
-                'DELETE FROM direct_messages WHERE id = ? AND sender_id = ?',
-                [messageId, senderId],
-                function (err) {
-                    if (err) reject(err);
-                    else resolve({ changes: this.changes });
-                }
-            );
+            const mid = parseInt(messageId, 10);
+            db.run('UPDATE direct_messages SET reply_to_id = NULL WHERE reply_to_id = ?', [mid], () => {
+                db.run('DELETE FROM dm_pins WHERE message_id = ?', [mid], () => {
+                    db.run(
+                        'DELETE FROM direct_messages WHERE id = ? AND sender_id = ?',
+                        [mid, senderId],
+                        function (err) {
+                            if (err) reject(err);
+                            else resolve({ changes: this.changes });
+                        }
+                    );
+                });
+            });
         });
     },
 
@@ -1115,6 +1372,183 @@ const serverDB = {
     }
 };
 
+const serverBanDB = {
+    banUser: (serverId, userId, reason, createdBy) => {
+        return new Promise((resolve, reject) => {
+            db.run(
+                'INSERT OR REPLACE INTO server_bans (server_id, user_id, reason, created_by) VALUES (?, ?, ?, ?)',
+                [serverId, userId, reason || null, createdBy || null],
+                function (err) {
+                    if (err) reject(err);
+                    else resolve({ changes: this.changes });
+                }
+            );
+        });
+    },
+    unbanUser: (serverId, userId) => {
+        return new Promise((resolve, reject) => {
+            db.run(
+                'DELETE FROM server_bans WHERE server_id = ? AND user_id = ?',
+                [serverId, userId],
+                function (err) {
+                    if (err) reject(err);
+                    else resolve({ changes: this.changes });
+                }
+            );
+        });
+    },
+    isBanned: (serverId, userId) => {
+        return new Promise((resolve, reject) => {
+            db.get(
+                'SELECT 1 FROM server_bans WHERE server_id = ? AND user_id = ?',
+                [serverId, userId],
+                (err, row) => {
+                    if (err) reject(err);
+                    else resolve(!!row);
+                }
+            );
+        });
+    }
+};
+
+const moderationReportDB = {
+    create: ({ reporterId, serverId, targetType, targetId, reason, details }) => {
+        return new Promise((resolve, reject) => {
+            db.run(
+                `INSERT INTO moderation_reports
+                 (reporter_id, server_id, target_type, target_id, reason, details)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [reporterId, serverId || null, targetType, targetId || null, reason, details || null],
+                function (err) {
+                    if (err) reject(err);
+                    else resolve({ id: this.lastID });
+                }
+            );
+        });
+    },
+    getByServer: (serverId, status = 'open') => {
+        return new Promise((resolve, reject) => {
+            const vals = [serverId];
+            let where = 'WHERE r.server_id = ?';
+            if (status && status !== 'all') {
+                where += ' AND r.status = ?';
+                vals.push(status);
+            }
+            db.all(
+                `SELECT r.*,
+                        u.username AS reporter_username
+                 FROM moderation_reports r
+                 LEFT JOIN users u ON u.id = r.reporter_id
+                 ${where}
+                 ORDER BY r.created_at DESC`,
+                vals,
+                (err, rows) => {
+                    if (err) reject(err);
+                    else resolve(rows || []);
+                }
+            );
+        });
+    },
+    findById: (id) => {
+        return new Promise((resolve, reject) => {
+            db.get('SELECT * FROM moderation_reports WHERE id = ?', [id], (err, row) => {
+                if (err) reject(err);
+                else resolve(row || null);
+            });
+        });
+    },
+    resolve: (id, reviewerId) => {
+        return new Promise((resolve, reject) => {
+            db.run(
+                `UPDATE moderation_reports
+                 SET status = 'resolved', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP
+                 WHERE id = ?`,
+                [reviewerId, id],
+                function (err) {
+                    if (err) reject(err);
+                    else resolve({ changes: this.changes });
+                }
+            );
+        });
+    }
+};
+
+const serverInviteDB = {
+    create: ({ serverId, code, createdBy }) => {
+        return new Promise((resolve, reject) => {
+            db.run(
+                `INSERT INTO server_invites (server_id, code, created_by)
+                 VALUES (?, ?, ?)`,
+                [serverId, code, createdBy],
+                function (err) {
+                    if (err) reject(err);
+                    else resolve({ id: this.lastID, code });
+                }
+            );
+        });
+    },
+    listByServer: (serverId) => {
+        return new Promise((resolve, reject) => {
+            db.all(
+                `SELECT i.*,
+                        u.username AS created_by_username
+                 FROM server_invites i
+                 LEFT JOIN users u ON u.id = i.created_by
+                 WHERE i.server_id = ?
+                 ORDER BY i.created_at DESC`,
+                [serverId],
+                (err, rows) => {
+                    if (err) reject(err);
+                    else resolve(rows || []);
+                }
+            );
+        });
+    },
+    findByCode: (code) => {
+        return new Promise((resolve, reject) => {
+            db.get(
+                `SELECT i.*, s.name AS server_name, s.icon AS server_icon
+                 FROM server_invites i
+                 JOIN servers s ON s.id = i.server_id
+                 WHERE i.code = ?`,
+                [code],
+                (err, row) => {
+                    if (err) reject(err);
+                    else resolve(row || null);
+                }
+            );
+        });
+    },
+    revokeById: (id, serverId) => {
+        return new Promise((resolve, reject) => {
+            db.run(
+                `UPDATE server_invites
+                 SET revoked = 1, revoked_at = CURRENT_TIMESTAMP
+                 WHERE id = ? AND server_id = ? AND revoked = 0`,
+                [id, serverId],
+                function (err) {
+                    if (err) reject(err);
+                    else resolve({ changes: this.changes });
+                }
+            );
+        });
+    },
+    touchUseByCode: (code) => {
+        return new Promise((resolve, reject) => {
+            db.run(
+                `UPDATE server_invites
+                 SET uses_count = COALESCE(uses_count, 0) + 1, last_used_at = CURRENT_TIMESTAMP
+                 WHERE code = ?`,
+                [code],
+                function (err) {
+                    if (err) reject(err);
+                    else resolve({ changes: this.changes });
+                }
+            );
+        });
+    }
+};
+
 /** Колонка identity_public_jwk и таблица обёрток ключей каналов (E2EE) */
 function ensureE2eeSchema() {
     return new Promise((resolve, reject) => {
@@ -1168,6 +1602,66 @@ function ensureUserProfileSchema() {
                 addBanner();
             });
         });
+    });
+}
+
+function ensureUserSecuritySchema() {
+    return new Promise((resolve, reject) => {
+        db.all('PRAGMA table_info(users)', [], (err, cols) => {
+            if (err) return reject(err);
+            const names = new Set((cols || []).map((c) => c.name));
+            const addLoginAlerts = () => {
+                if (names.has('email_login_alerts')) return resolve();
+                db.run('ALTER TABLE users ADD COLUMN email_login_alerts INTEGER DEFAULT 0', (e2) => {
+                    if (e2) return reject(e2);
+                    resolve();
+                });
+            };
+            if (names.has('email_verified')) return addLoginAlerts();
+            db.run('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0', (e) => {
+                if (e) return reject(e);
+                names.add('email_verified');
+                addLoginAlerts();
+            });
+        });
+    });
+}
+
+function ensureServerInviteSchema() {
+    return new Promise((resolve, reject) => {
+        db.run(
+            `CREATE TABLE IF NOT EXISTS server_invites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id INTEGER NOT NULL,
+                code TEXT UNIQUE NOT NULL,
+                created_by INTEGER NOT NULL,
+                revoked INTEGER DEFAULT 0,
+                uses_count INTEGER DEFAULT 0,
+                last_used_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                revoked_at DATETIME,
+                FOREIGN KEY (server_id) REFERENCES servers(id),
+                FOREIGN KEY (created_by) REFERENCES users(id)
+            )`,
+            (err) => {
+                if (err) return reject(err);
+                db.run(
+                    `CREATE INDEX IF NOT EXISTS idx_server_invites_server_id
+                     ON server_invites(server_id)`,
+                    (e2) => {
+                        if (e2) return reject(e2);
+                        db.run(
+                            `CREATE INDEX IF NOT EXISTS idx_server_invites_code
+                             ON server_invites(code)`,
+                            (e3) => {
+                                if (e3) return reject(e3);
+                                resolve();
+                            }
+                        );
+                    }
+                );
+            }
+        );
     });
 }
 
@@ -1352,6 +1846,196 @@ function migrateChannelsForEmptyServers() {
     });
 }
 
+function ensureMessageReplyAndPinsSchema() {
+    return new Promise((resolve, reject) => {
+        const addCols = () => {
+            db.all('PRAGMA table_info(messages)', [], (err, cols) => {
+                if (err) return reject(err);
+                const names = new Set((cols || []).map((c) => c.name));
+                const nextDm = () => {
+                    db.all('PRAGMA table_info(direct_messages)', [], (e2, cols2) => {
+                        if (e2) return reject(e2);
+                        const n2 = new Set((cols2 || []).map((c) => c.name));
+                        const createPins = () => {
+                            db.run(
+                                `CREATE TABLE IF NOT EXISTS channel_pins (
+                                    channel_id INTEGER NOT NULL,
+                                    message_id INTEGER NOT NULL,
+                                    pinned_by INTEGER NOT NULL,
+                                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                    PRIMARY KEY (channel_id, message_id),
+                                    FOREIGN KEY (channel_id) REFERENCES channels(id),
+                                    FOREIGN KEY (message_id) REFERENCES messages(id)
+                                )`,
+                                (e3) => {
+                                    if (e3) return reject(e3);
+                                    db.run(
+                                        `CREATE TABLE IF NOT EXISTS dm_pins (
+                                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                            message_id INTEGER NOT NULL UNIQUE,
+                                            pinned_by INTEGER NOT NULL,
+                                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                            FOREIGN KEY (message_id) REFERENCES direct_messages(id)
+                                        )`,
+                                        (e4) => {
+                                            if (e4) reject(e4);
+                                            else resolve();
+                                        }
+                                    );
+                                }
+                            );
+                        };
+                        if (n2.has('reply_to_id')) return createPins();
+                        db.run('ALTER TABLE direct_messages ADD COLUMN reply_to_id INTEGER', (e) => {
+                            if (e) return reject(e);
+                            createPins();
+                        });
+                    });
+                };
+                if (names.has('reply_to_id')) return nextDm();
+                db.run('ALTER TABLE messages ADD COLUMN reply_to_id INTEGER', (e) => {
+                    if (e) return reject(e);
+                    nextDm();
+                });
+            });
+        };
+        addCols();
+    });
+}
+
+function ensureStickerPackSchema() {
+    return new Promise((resolve, reject) => {
+        db.serialize(() => {
+            db.run(
+                `CREATE TABLE IF NOT EXISTS sticker_packs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    is_public INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (owner_id) REFERENCES users(id)
+                )`,
+                (e) => {
+                    if (e) return reject(e);
+                    db.run(
+                        `CREATE TABLE IF NOT EXISTS sticker_items (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            pack_id INTEGER NOT NULL,
+                            filename TEXT NOT NULL,
+                            sort_order INTEGER DEFAULT 0,
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (pack_id) REFERENCES sticker_packs(id) ON DELETE CASCADE
+                        )`,
+                        (e2) => (e2 ? reject(e2) : resolve())
+                    );
+                }
+            );
+        });
+    });
+}
+
+const FLOR_MAX_STICKER_PACKS_PER_USER = 30;
+const FLOR_MAX_STICKERS_PER_PACK = 80;
+
+const stickerPackDB = {
+    countByOwner: (userId) => {
+        return new Promise((resolve, reject) => {
+            db.get(
+                'SELECT COUNT(*) AS c FROM sticker_packs WHERE owner_id = ?',
+                [userId],
+                (err, row) => {
+                    if (err) reject(err);
+                    else resolve(row && row.c != null ? Number(row.c) : 0);
+                }
+            );
+        });
+    },
+
+    countItemsInPack: (packId) => {
+        return new Promise((resolve, reject) => {
+            db.get(
+                'SELECT COUNT(*) AS c FROM sticker_items WHERE pack_id = ?',
+                [packId],
+                (err, row) => {
+                    if (err) reject(err);
+                    else resolve(row && row.c != null ? Number(row.c) : 0);
+                }
+            );
+        });
+    },
+
+    getPack: (packId) => {
+        return new Promise((resolve, reject) => {
+            db.get('SELECT * FROM sticker_packs WHERE id = ?', [packId], (err, row) => {
+                if (err) reject(err);
+                else resolve(row || null);
+            });
+        });
+    },
+
+    canAccess: (userId, pack) => {
+        if (!pack) return false;
+        if (Number(pack.owner_id) === Number(userId)) return true;
+        return Number(pack.is_public) === 1;
+    },
+
+    listPacksForUser: (userId) => {
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT sp.*, u.username AS owner_name
+                FROM sticker_packs sp
+                JOIN users u ON u.id = sp.owner_id
+                WHERE sp.owner_id = ? OR sp.is_public = 1
+                ORDER BY sp.created_at DESC
+            `;
+            db.all(sql, [userId], (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows || []);
+            });
+        });
+    },
+
+    listItems: (packId) => {
+        return new Promise((resolve, reject) => {
+            db.all(
+                'SELECT * FROM sticker_items WHERE pack_id = ? ORDER BY sort_order ASC, id ASC',
+                [packId],
+                (err, rows) => {
+                    if (err) reject(err);
+                    else resolve(rows || []);
+                }
+            );
+        });
+    },
+
+    create: (ownerId, name, isPublic) => {
+        return new Promise((resolve, reject) => {
+            const n = String(name || '')
+                .trim()
+                .slice(0, 64);
+            if (!n) {
+                return reject(new Error('EMPTY_NAME'));
+            }
+            const pub = isPublic ? 1 : 0;
+            const sql = 'INSERT INTO sticker_packs (owner_id, name, is_public) VALUES (?, ?, ?)';
+            db.run(sql, [ownerId, n, pub], function (err) {
+                if (err) reject(err);
+                else resolve({ id: this.lastID, name: n, is_public: pub, owner_id: ownerId });
+            });
+        });
+    },
+
+    addItem: (packId, filename, sortOrder) => {
+        return new Promise((resolve, reject) => {
+            const sql = 'INSERT INTO sticker_items (pack_id, filename, sort_order) VALUES (?, ?, ?)';
+            db.run(sql, [packId, filename, sortOrder != null ? sortOrder : 0], function (err) {
+                if (err) reject(err);
+                else resolve({ id: this.lastID, pack_id: packId, filename });
+            });
+        });
+    }
+};
+
 module.exports = {
     db,
     initializeDatabase,
@@ -1359,9 +2043,17 @@ module.exports = {
     ensureChannelSchema,
     ensureE2eeSchema,
     ensureUserProfileSchema,
+    ensureUserSecuritySchema,
+    ensureServerInviteSchema,
     ensureDmReactionsSchema,
+    ensureMessageReplyAndPinsSchema,
+    ensureStickerPackSchema,
+    FLOR_MAX_STICKER_PACKS_PER_USER,
+    FLOR_MAX_STICKERS_PER_PACK,
     migrateChannelHierarchy,
     getChannelTree,
+    FLOR_MAX_CHANNEL_PINS,
+    FLOR_MAX_DM_PINS,
     userDB,
     messageDB,
     channelDB,
@@ -1371,6 +2063,11 @@ module.exports = {
     fileDB,
     reactionDB,
     dmReactionDB,
+    pinDB,
     friendDB,
-    serverDB
+    serverDB,
+    serverBanDB,
+    moderationReportDB,
+    serverInviteDB,
+    stickerPackDB
 };

@@ -7,27 +7,334 @@
     <title>Условия использования — FLOR MESSENGER</title>
     <link rel="stylesheet" href="auth.css">
     <style>
-        .legal-doc { max-width: 640px; margin: 0 auto; padding: 32px 20px 48px; line-height: 1.6; color: var(--flor-text); }
-        .legal-doc h1 { font-size: 1.5rem; margin-bottom: 16px; }
-        .legal-doc h2 { font-size: 1.1rem; margin: 24px 0 8px; }
-        .legal-doc p, .legal-doc li { margin-bottom: 12px; color: var(--flor-muted); }
-        .legal-doc a { color: var(--flor-purple-700); }
-        .legal-back { display: inline-block; margin-bottom: 20px; font-size: 14px; }
+        :root {
+            --legal-glass-bg: rgba(255, 255, 255, 0.48);
+            --legal-glass-stroke: rgba(255, 255, 255, 0.58);
+            --legal-shadow: 0 34px 90px rgba(74, 46, 141, 0.24);
+        }
+        body {
+            min-height: 100vh;
+            background:
+                radial-gradient(ellipse 90% 70% at 100% 0%, rgba(217, 70, 239, 0.25), transparent 52%),
+                radial-gradient(ellipse 75% 65% at 0% 100%, rgba(124, 58, 237, 0.22), transparent 52%),
+                linear-gradient(145deg, #f5f1ff 0%, #eee7ff 44%, #f8f4ff 100%);
+            overflow-x: hidden;
+        }
+        .legal-liquid-bg {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            overflow: hidden;
+            z-index: 0;
+        }
+        .legal-liquid-bg span {
+            position: absolute;
+            border-radius: 999px;
+            filter: blur(2px);
+            opacity: 0.82;
+            animation: legalFloat 18s ease-in-out infinite;
+        }
+        .legal-liquid-bg__a {
+            width: min(44vw, 540px);
+            height: min(44vw, 540px);
+            top: -130px;
+            right: -120px;
+            background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.9), rgba(217, 70, 239, 0.5));
+        }
+        .legal-liquid-bg__b {
+            width: min(34vw, 430px);
+            height: min(34vw, 430px);
+            bottom: -130px;
+            left: -90px;
+            background: radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.85), rgba(124, 58, 237, 0.44));
+            animation-delay: -6s;
+        }
+        .legal-liquid-bg__c {
+            width: min(24vw, 320px);
+            height: min(24vw, 320px);
+            top: 42%;
+            left: 52%;
+            background: radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.7), rgba(139, 92, 246, 0.35));
+            animation-delay: -11s;
+        }
+        @keyframes legalFloat {
+            0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+            50% { transform: translate3d(0, -15px, 0) scale(1.05); }
+        }
+        .legal-doc {
+            max-width: 980px;
+            margin: 0 auto;
+            padding: 34px 20px 60px;
+            line-height: 1.72;
+            color: var(--flor-text);
+            position: relative;
+            z-index: 1;
+        }
+        .legal-card {
+            border: 1px solid var(--legal-glass-stroke);
+            border-radius: 28px;
+            background: var(--legal-glass-bg);
+            box-shadow: var(--legal-shadow);
+            backdrop-filter: blur(18px) saturate(135%);
+            -webkit-backdrop-filter: blur(18px) saturate(135%);
+            padding: clamp(20px, 3.3vw, 36px);
+            position: relative;
+            overflow: hidden;
+        }
+        .legal-card::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background:
+                linear-gradient(150deg, rgba(255, 255, 255, 0.46), rgba(255, 255, 255, 0.08) 45%, transparent 68%),
+                radial-gradient(circle at 14% 0%, rgba(255, 255, 255, 0.45), transparent 40%);
+        }
+        .legal-back {
+            display: inline-block;
+            margin-bottom: 18px;
+            font-size: 14px;
+            color: var(--flor-purple-700);
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .legal-back:hover { text-decoration: underline; }
+        .legal-doc h1 {
+            font-size: clamp(1.55rem, 2.8vw, 2rem);
+            margin-bottom: 10px;
+            letter-spacing: -0.02em;
+            position: relative;
+            z-index: 1;
+        }
+        .legal-meta {
+            margin-bottom: 20px;
+            color: var(--flor-muted);
+            font-size: 14px;
+            position: relative;
+            z-index: 1;
+        }
+        .legal-intro {
+            margin-bottom: 22px;
+            color: var(--flor-muted);
+            position: relative;
+            z-index: 1;
+        }
+        .legal-section {
+            margin-top: 22px;
+            padding: 16px 18px 14px;
+            border: 1px solid rgba(255, 255, 255, 0.62);
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.42);
+            position: relative;
+            z-index: 1;
+            backdrop-filter: blur(8px);
+        }
+        .legal-section h2 {
+            font-size: 1.06rem;
+            margin-bottom: 8px;
+        }
+        .legal-section p {
+            margin-bottom: 8px;
+            color: var(--flor-muted);
+        }
+        .legal-section ol,
+        .legal-section ul {
+            margin: 8px 0 0 20px;
+            color: var(--flor-muted);
+        }
+        .legal-section li { margin-bottom: 6px; }
+        .legal-footer-note {
+            margin-top: 24px;
+            padding: 16px 18px;
+            border-radius: 16px;
+            background: rgba(139, 92, 246, 0.12);
+            border: 1px solid rgba(139, 92, 246, 0.28);
+            position: relative;
+            z-index: 1;
+        }
+        .legal-footer-note ul { margin: 8px 0 0 20px; color: var(--flor-muted); }
+        html[data-theme="dark"] {
+            --legal-glass-bg: rgba(24, 20, 34, 0.58);
+            --legal-glass-stroke: rgba(255, 255, 255, 0.12);
+            --legal-shadow: 0 34px 90px rgba(0, 0, 0, 0.5);
+        }
+        html[data-theme="dark"] body {
+            background:
+                radial-gradient(ellipse 90% 70% at 100% 0%, rgba(217, 70, 239, 0.26), transparent 52%),
+                radial-gradient(ellipse 70% 64% at 0% 100%, rgba(76, 29, 149, 0.36), transparent 52%),
+                linear-gradient(145deg, #0f0b16 0%, #171124 52%, #120f1d 100%);
+        }
+        html[data-theme="dark"] .legal-section {
+            background: rgba(255, 255, 255, 0.03);
+            border-color: rgba(255, 255, 255, 0.16);
+        }
+        html[data-theme="dark"] .legal-footer-note {
+            background: rgba(139, 92, 246, 0.16);
+            border-color: rgba(167, 139, 250, 0.28);
+        }
     </style>
 </head>
 <body>
+    <div class="legal-liquid-bg" aria-hidden="true">
+        <span class="legal-liquid-bg__a"></span>
+        <span class="legal-liquid-bg__b"></span>
+        <span class="legal-liquid-bg__c"></span>
+    </div>
     <div class="legal-doc">
+        <div class="legal-card">
         <a class="legal-back" href="login.html">← На страницу входа</a>
-        <h1>Условия использования</h1>
-        <p>Используя FLOR MESSENGER, вы соглашаетесь с правилами ниже. Оператор сервера может дополнить их отдельным регламентом.</p>
-        <h2>Допустимое поведение</h2>
-        <p>Запрещены домогательства, распространение вредоносного ПО, незаконный контент, спам и действия, нарушающие работу сервиса. Администратор вправе ограничить доступ при нарушениях.</p>
-        <h2>Ответственность</h2>
-        <p>Сервис предоставляется «как есть». Оператор не гарантирует бесперебойную работу и не несёт ответственности за косвенные убытки, возникшие при использовании мессенджера.</p>
-        <h2>Возраст</h2>
-        <p>Если в вашей юрисдикции действуют ограничения по возрасту для онлайн-сервисов, вы подтверждаете, что им право пользоваться.</p>
-        <h2>Изменения</h2>
-        <p>Условия могут обновляться. Продолжение использования после публикации новой версии означает согласие с ней.</p>
+        <h1>Пользовательское соглашение (Terms of Use) мессенджера Flora — веб-версия</h1>
+        <div class="legal-meta">Дата вступления в силу: [вставь]</div>
+        <p class="legal-intro">
+            Этот документ регулирует использование веб-версии Flora. Пожалуйста, внимательно ознакомьтесь
+            с условиями до начала использования Сервиса.
+        </p>
+
+        <section class="legal-section">
+            <h2>1. Общие положения</h2>
+            <ol>
+                <li>Flora — это веб-сервис для обмена сообщениями, доступный через браузер.</li>
+                <li>Используя Сервис, пользователь подтверждает согласие с настоящими условиями.</li>
+                <li>Если пользователь не согласен с условиями, он обязан прекратить использование Сервиса.</li>
+            </ol>
+        </section>
+
+        <section class="legal-section">
+            <h2>2. Правовой статус</h2>
+            <ol>
+                <li>Сервис предоставляется «как есть» (AS IS).</li>
+                <li>Сервис является технической платформой для передачи информации между пользователями.</li>
+                <li>Деятельность Сервиса осуществляется с учётом требований применимого законодательства, включая:</li>
+            </ol>
+            <ul>
+                <li>GDPR</li>
+                <li>Федеральный закон №152-ФЗ</li>
+                <li>Федеральный закон №149-ФЗ</li>
+            </ul>
+        </section>
+
+        <section class="legal-section">
+            <h2>3. Регистрация и аккаунт</h2>
+            <ol>
+                <li>Пользователь несёт полную ответственность за сохранность данных своего аккаунта.</li>
+                <li>Все действия, совершённые с аккаунта, считаются действиями пользователя.</li>
+                <li>Сервис не обязан восстанавливать доступ к аккаунту.</li>
+            </ol>
+        </section>
+
+        <section class="legal-section">
+            <h2>4. Использование сервиса</h2>
+            <p>Пользователю запрещается:</p>
+            <ul>
+                <li>нарушать законодательство;</li>
+                <li>распространять незаконный контент;</li>
+                <li>заниматься мошенничеством и спамом;</li>
+                <li>распространять вредоносное ПО;</li>
+                <li>предпринимать попытки взлома или вмешательства в работу Сервиса.</li>
+            </ul>
+        </section>
+
+        <section class="legal-section">
+            <h2>5. Контент пользователей</h2>
+            <ol>
+                <li>Пользователь полностью несёт ответственность за отправляемые сообщения и файлы.</li>
+                <li>Сервис не инициирует передачу данных, не выбирает получателя и не изменяет содержание сообщений.</li>
+                <li>Сервис не осуществляет предварительный контроль пользовательского контента.</li>
+            </ol>
+        </section>
+
+        <section class="legal-section">
+            <h2>6. Особенности работы веб-версии</h2>
+            <ol>
+                <li>Сервис работает через интернет и зависит от браузера пользователя, интернет-соединения и серверной инфраструктуры.</li>
+                <li>Сообщения могут временно или постоянно храниться на серверах.</li>
+                <li>Сервис не гарантирует сохранность или конфиденциальность всех передаваемых данных.</li>
+            </ol>
+        </section>
+
+        <section class="legal-section">
+            <h2>7. Ограничение ответственности</h2>
+            <ol>
+                <li>Сервис не гарантирует бесперебойную работу, отсутствие ошибок и абсолютную безопасность.</li>
+                <li>В максимально допустимой законом степени Сервис не несёт ответственности за:</li>
+            </ol>
+            <ul>
+                <li>потерю данных;</li>
+                <li>утечку информации;</li>
+                <li>действия пользователей;</li>
+                <li>любой ущерб (прямой или косвенный).</li>
+            </ul>
+        </section>
+
+        <section class="legal-section">
+            <h2>8. Индемнификация</h2>
+            <ol>
+                <li>Пользователь обязуется возместить ущерб Сервису, если:</li>
+            </ol>
+            <ul>
+                <li>нарушил условия настоящего Соглашения;</li>
+                <li>нарушил закон;</li>
+                <li>его действия привели к претензиям третьих лиц.</li>
+            </ul>
+        </section>
+
+        <section class="legal-section">
+            <h2>9. Блокировка и ограничения</h2>
+            <ol>
+                <li>Сервис вправе ограничить доступ, заблокировать аккаунт или удалить контент без объяснения причин.</li>
+            </ol>
+        </section>
+
+        <section class="legal-section">
+            <h2>10. Взаимодействие с государственными органами</h2>
+            <ol>
+                <li>Сервис вправе раскрывать данные по законному требованию и для защиты прав и безопасности.</li>
+            </ol>
+        </section>
+
+        <section class="legal-section">
+            <h2>11. Изменение сервиса</h2>
+            <ol>
+                <li>Сервис может быть изменён или прекращён в любое время.</li>
+                <li>Уведомление пользователей об изменениях не гарантируется.</li>
+            </ol>
+        </section>
+
+        <section class="legal-section">
+            <h2>12. Изменение условий</h2>
+            <ol>
+                <li>Условия могут обновляться без предварительного уведомления.</li>
+                <li>Продолжение использования Сервиса означает согласие с актуальной редакцией условий.</li>
+            </ol>
+        </section>
+
+        <section class="legal-section">
+            <h2>13. Отказ от гарантий</h2>
+            <ol>
+                <li>Пользователь использует Сервис на свой риск.</li>
+                <li>Сервис не предоставляет юридических гарантий.</li>
+            </ol>
+        </section>
+
+        <section class="legal-section">
+            <h2>14. Делимость условий</h2>
+            <p>Если часть условий признана недействительной, остальные положения Соглашения сохраняют силу.</p>
+        </section>
+
+        <section class="legal-section">
+            <h2>15. Контакты</h2>
+            <p>Email: [вставь]</p>
+        </section>
+
+        <div class="legal-footer-note">
+            Используя Flora, пользователь:
+            <ul>
+                <li>принимает условия настоящего Соглашения;</li>
+                <li>понимает риски использования веб-сервиса;</li>
+                <li>несёт личную ответственность за свои действия.</li>
+            </ul>
+        </div>
+        </div>
     </div>
 </body>
 </html>

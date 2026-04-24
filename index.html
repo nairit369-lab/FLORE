@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
@@ -13,7 +13,8 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400;500;700&display=swap" rel="stylesheet">
     <title>FLOR MESSENGER</title>
     <script>
         try {
@@ -22,11 +23,28 @@
         } catch (e) {}
     </script>
     <link rel="stylesheet" href="styles.css">
+    <script src="i18n-uk-tt.js"></script>
+    <script src="i18n.js"></script>
+    <script>
+        try { if (window.florI18n) window.florI18n.bootEarly(); } catch (e) {}
+    </script>
     <script src="/insecure-context-banner.js" defer></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="crypto-e2e.js"></script>
+    <script src="flor-expressions.js"></script>
 </head>
 <body>
+    <svg class="flor-liquid-filter-svg" aria-hidden="true" focusable="false">
+        <filter id="flor-liquid-refraction" color-interpolation-filters="sRGB">
+            <feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="2" result="noise" />
+            <feDisplacementMap in="SourceGraphic" in2="noise" scale="4" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+    </svg>
+    <div class="flor-aurora" id="florAuroraBg" aria-hidden="true">
+        <div class="flor-aurora__blob flor-aurora__blob--1"></div>
+        <div class="flor-aurora__blob flor-aurora__blob--2"></div>
+        <div class="flor-aurora__blob flor-aurora__blob--3"></div>
+    </div>
     <div id="florSplash" class="flor-splash" aria-hidden="true">
         <div class="flor-splash__inner">
             <img src="assets/flor-logo.png" alt="" class="flor-splash__logo" width="88" height="88" />
@@ -39,16 +57,152 @@
             <div id="userProfileContent" class="user-profile-content"></div>
         </div>
     </div>
+    <div id="createServerOverlay" class="settings-overlay hidden" aria-hidden="true">
+        <div class="settings-panel flor-create-server-panel" role="dialog" aria-modal="true" aria-labelledby="createServerTitle">
+            <button type="button" class="user-profile-close" id="createServerCloseBtn" aria-label="Закрыть"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
+            <div class="flor-create-server-panel__icon" aria-hidden="true">
+                <svg width="40" height="40" viewBox="0 0 24 24"><path fill="currentColor" d="M4 10.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5v-5zM13 6.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5v-5zM4 19.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5v1c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5v-1zM13 15.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5v-5z"/></svg>
+            </div>
+            <h2 id="createServerTitle">Создать группу</h2>
+            <p class="settings-hint flor-create-server-panel__lead">Новый сервер появится в колонке слева. Участники увидят это название.</p>
+            <div class="form-group-settings">
+                <label for="createServerNameInput">Название сервера</label>
+                <input type="text" id="createServerNameInput" maxlength="64" placeholder="Например: Друзья, Проект, Клан" autocomplete="off" />
+            </div>
+            <p id="createServerError" class="flor-modal-field-error" hidden role="alert"></p>
+            <div class="settings-actions settings-actions--row flor-create-server-actions">
+                <button type="button" class="settings-btn settings-btn--secondary" id="createServerCancelBtn">Отмена</button>
+                <button type="button" class="settings-btn primary" id="createServerSubmitBtn">Создать</button>
+            </div>
+        </div>
+    </div>
     <div class="flor-mobile-nav-backdrop" id="florMobileNavBackdrop" aria-hidden="true"></div>
+    <aside class="flor-mobile-drawer" id="florMobileDrawer" aria-hidden="true" aria-label="Главное меню">
+        <div class="flor-mobile-drawer__scroll">
+            <div class="flor-mobile-drawer__profile" id="florMobileDrawerProfile" role="button" tabindex="0" aria-label="Открыть профиль">
+                <div class="flor-mobile-drawer__av friend-avatar" id="florMobileDrawerAv"></div>
+                <div class="flor-mobile-drawer__me">
+                    <div class="flor-mobile-drawer__name" id="florMobileDrawerName">Пользователь</div>
+                    <div class="flor-mobile-drawer__handle" id="florMobileDrawerHandle">@user</div>
+                </div>
+                <button type="button" class="flor-mobile-drawer__edge" id="florMobileDrawerThemeBtn" data-flor-theme-toggle aria-label="Переключить тему" aria-pressed="false"></button>
+            </div>
+            <nav class="flor-mobile-drawer__menu" aria-label="Разделы">
+                <button type="button" class="flor-mobile-drawer__item" data-drawer-action="new-chat">
+                    <span class="flor-mobile-drawer__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM14.06 6.19l3.75 3.75"/></svg></span>
+                    <span class="flor-mobile-drawer__label" data-i18n="nav.newChat">Новый чат</span>
+                </button>
+                <button type="button" class="flor-mobile-drawer__item" data-drawer-action="new-group">
+                    <span class="flor-mobile-drawer__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zm8-1a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM2.5 19.5c0-3 2.9-5.5 6.5-5.5s6.5 2.5 6.5 5.5M17 14c2.5 0 4.5 1.8 4.5 4"/></svg></span>
+                    <span class="flor-mobile-drawer__label" data-i18n="nav.newGroup">Новая группа</span>
+                </button>
+                <button type="button" class="flor-mobile-drawer__item" data-drawer-action="friends">
+                    <span class="flor-mobile-drawer__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm-7 9c0-3.3 3.1-6 7-6s7 2.7 7 6"/></svg></span>
+                    <span class="flor-mobile-drawer__label" data-i18n="nav.friends">Друзья</span>
+                </button>
+                <button type="button" class="flor-mobile-drawer__item" data-drawer-action="servers">
+                    <span class="flor-mobile-drawer__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 5h16v4H4zM4 11h16v4H4zM4 17h16v4H4z"/></svg></span>
+                    <span class="flor-mobile-drawer__label" data-i18n="nav.myServers">Мои серверы</span>
+                </button>
+                <button type="button" class="flor-mobile-drawer__item" data-drawer-action="bookmarks">
+                    <span class="flor-mobile-drawer__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 3h12v18l-6-3-6 3z"/></svg></span>
+                    <span class="flor-mobile-drawer__label" data-i18n="nav.bookmarks">Закладки</span>
+                </button>
+                <div class="flor-mobile-drawer__divider" aria-hidden="true"></div>
+                <button type="button" class="flor-mobile-drawer__item" data-drawer-action="settings">
+                    <span class="flor-mobile-drawer__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM19.4 13.9l2 1.2-2 3.4-2.3-.9c-.5.4-1 .7-1.6 1l-.3 2.4h-4l-.3-2.4a7.4 7.4 0 0 1-1.6-1l-2.3.9-2-3.4 2-1.2a7.3 7.3 0 0 1 0-3.8l-2-1.2 2-3.4 2.3.9c.5-.4 1-.7 1.6-1l.3-2.4h4l.3 2.4c.6.3 1.1.6 1.6 1l2.3-.9 2 3.4-2 1.2a7.3 7.3 0 0 1 0 3.8z"/></svg></span>
+                    <span class="flor-mobile-drawer__label" data-i18n="nav.settings">Настройки</span>
+                </button>
+                <button type="button" class="flor-mobile-drawer__item" data-drawer-action="privacy">
+                    <span class="flor-mobile-drawer__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 2l8 4v6c0 5-3.4 9-8 10-4.6-1-8-5-8-10V6l8-4z"/></svg></span>
+                    <span class="flor-mobile-drawer__label" data-i18n="nav.privacy">Приватность</span>
+                </button>
+                <button type="button" class="flor-mobile-drawer__item" data-drawer-action="logout">
+                    <span class="flor-mobile-drawer__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M10 17l-5-5 5-5M5 12h12M15 4h4v16h-4"/></svg></span>
+                    <span class="flor-mobile-drawer__label" data-i18n="nav.logout">Выйти</span>
+                </button>
+            </nav>
+            <div class="flor-mobile-drawer__section" data-i18n-aria="nav.servers" aria-label="Серверы">
+                <div class="flor-mobile-drawer__section-title" data-i18n="nav.serversSection">Серверы</div>
+                <div class="flor-mobile-drawer__servers" id="florMobileDrawerServers" role="list"></div>
+            </div>
+        </div>
+    </aside>
+    <section class="flor-mobile-screen flor-mobile-screen--servers" id="florMobileServersScreen" aria-hidden="true" aria-label="Мои серверы">
+        <header class="flor-mobile-screen__header">
+            <button type="button" class="flor-mobile-screen__back" data-mobile-screen-close aria-label="Назад">
+                <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.7 4.3L7 13l8.7 8.7 1.4-1.4L9.8 13l7.3-7.3z"/></svg>
+            </button>
+            <h1 class="flor-mobile-screen__title">Серверы</h1>
+            <button type="button" class="flor-mobile-screen__action" id="florMobileServersAddBtn" aria-label="Создать сервер">
+                <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></svg>
+            </button>
+        </header>
+        <div class="flor-mobile-screen__body">
+            <div class="flor-mobile-servers-grid" id="florMobileServersGrid" role="list"></div>
+            <p class="flor-mobile-servers-empty" id="florMobileServersEmpty" hidden>Пока нет серверов. Создайте свой или присоединитесь к чужому.</p>
+        </div>
+    </section>
+    <section class="flor-mobile-screen flor-mobile-screen--profile" id="florMobileProfileScreen" aria-hidden="true" aria-label="Профиль">
+        <header class="flor-mobile-screen__header flor-mobile-screen__header--translucent">
+            <button type="button" class="flor-mobile-screen__back" data-mobile-screen-close aria-label="Назад">
+                <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.7 4.3L7 13l8.7 8.7 1.4-1.4L9.8 13l7.3-7.3z"/></svg>
+            </button>
+            <h1 class="flor-mobile-screen__title">Профиль</h1>
+            <button type="button" class="flor-mobile-screen__action" id="florMobileProfileEditBtn" aria-label="Редактировать">
+                <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM14.06 6.19l3.75 3.75"/></svg>
+            </button>
+        </header>
+        <div class="flor-mobile-screen__body">
+            <div class="flor-mobile-profile-hero">
+                <div class="flor-mobile-profile-hero__av friend-avatar" id="florMobileProfileAv"></div>
+                <div class="flor-mobile-profile-hero__name" id="florMobileProfileName">Пользователь</div>
+                <div class="flor-mobile-profile-hero__handle" id="florMobileProfileHandle">@user</div>
+                <div class="flor-mobile-profile-hero__status" id="florMobileProfileStatus">в сети</div>
+            </div>
+            <div class="flor-mobile-profile-list">
+                <button type="button" class="flor-mobile-profile-row" data-profile-action="account">
+                    <span class="flor-mobile-profile-row__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm-8 9c0-3.3 3.6-6 8-6s8 2.7 8 6"/></svg></span>
+                    <span class="flor-mobile-profile-row__label">Аккаунт</span>
+                    <span class="flor-mobile-profile-row__chev">›</span>
+                </button>
+                <button type="button" class="flor-mobile-profile-row" data-profile-action="privacy">
+                    <span class="flor-mobile-profile-row__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 2l8 4v6c0 5-3.4 9-8 10-4.6-1-8-5-8-10V6l8-4z"/></svg></span>
+                    <span class="flor-mobile-profile-row__label">Приватность</span>
+                    <span class="flor-mobile-profile-row__chev">›</span>
+                </button>
+                <button type="button" class="flor-mobile-profile-row" data-profile-action="notifications">
+                    <span class="flor-mobile-profile-row__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 8a6 6 0 0 1 12 0v5l2 3H4l2-3V8zm3 11a3 3 0 0 0 6 0"/></svg></span>
+                    <span class="flor-mobile-profile-row__label">Уведомления</span>
+                    <span class="flor-mobile-profile-row__chev">›</span>
+                </button>
+                <button type="button" class="flor-mobile-profile-row" data-profile-action="appearance">
+                    <span class="flor-mobile-profile-row__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 3a9 9 0 0 0 0 18c1.5 0 2.5-1 2.5-2.5 0-1-.5-1.5-.5-2.5s.5-1.5 1.5-1.5H18c1.8 0 3-1.2 3-3A9 9 0 0 0 12 3z"/></svg></span>
+                    <span class="flor-mobile-profile-row__label">Оформление</span>
+                    <span class="flor-mobile-profile-row__chev">›</span>
+                </button>
+                <button type="button" class="flor-mobile-profile-row" data-profile-action="servers">
+                    <span class="flor-mobile-profile-row__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 5h16v4H4zM4 11h16v4H4zM4 17h16v4H4z"/></svg></span>
+                    <span class="flor-mobile-profile-row__label">Мои серверы</span>
+                    <span class="flor-mobile-profile-row__chev">›</span>
+                </button>
+                <button type="button" class="flor-mobile-profile-row" data-profile-action="about">
+                    <span class="flor-mobile-profile-row__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 8h.01M11 12h1v5h1"/></svg></span>
+                    <span class="flor-mobile-profile-row__label">О приложении</span>
+                    <span class="flor-mobile-profile-row__chev">›</span>
+                </button>
+                <button type="button" class="flor-mobile-profile-row flor-mobile-profile-row--danger" data-profile-action="logout">
+                    <span class="flor-mobile-profile-row__icon"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M10 17l-5-5 5-5M5 12h12M15 4h4v16h-4"/></svg></span>
+                    <span class="flor-mobile-profile-row__label">Выйти</span>
+                </button>
+            </div>
+        </div>
+    </section>
     <div class="flor-desktop-shell">
     <header class="flor-desktop-topbar" aria-label="Верхняя панель">
         <div class="flor-desktop-topbar__brand">
             <img src="assets/flor-logo.png" alt="" class="flor-desktop-topbar__logo" width="36" height="36" />
             <span class="flor-desktop-topbar__title">FLOR</span>
-        </div>
-        <div class="flor-desktop-topbar__search-wrap">
-            <svg class="flor-desktop-topbar__search-icon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-            <input type="search" id="florGlobalSearchInput" class="flor-desktop-topbar__search" placeholder="Поиск в чате…" autocomplete="off" />
         </div>
         <div class="flor-desktop-topbar__actions">
             <button type="button" class="flor-desktop-icon-btn" data-flor-theme-toggle id="florDesktopThemeBtn" title="Тёмная тема" aria-label="Переключить тему" aria-pressed="false"></button>
@@ -65,7 +219,7 @@
         <div class="app-brand" title="FLOR MESSENGER">
             <img src="assets/flor-logo.png" alt="" class="app-logo" width="36" height="36" />
         </div>
-        <div class="server-icon home active" id="friendsBtn" title="Друзья и личные сообщения">
+        <div class="server-icon home active" id="friendsBtn" data-i18n-title="nav.friendsDm" title="Friends &amp; direct messages">
             <svg width="28" height="28" viewBox="0 0 24 24">
                 <path fill="currentColor" d="M14 8.00598C14 10.211 12.206 12.006 10 12.006C7.795 12.006 6 10.211 6 8.00598C6 5.80098 7.795 4.00598 10 4.00598C12.206 4.00598 14 5.80098 14 8.00598ZM2 19.006C2 15.473 5.29 13.006 10 13.006C14.711 13.006 18 15.473 18 19.006V20.006H2V19.006Z"/>
                 <path fill="currentColor" d="M20.0001 20.006H22.0001V19.006C22.0001 16.4433 20.2697 14.4415 17.5213 13.5352C19.0621 14.4488 20.0001 16.0865 20.0001 18.006V20.006Z"/>
@@ -73,7 +227,7 @@
             </svg>
         </div>
         <div class="server-separator"></div>
-        <div class="server-icon" id="addServerBtn" title="Добавить сервер">
+        <div class="server-icon" id="addServerBtn" data-i18n-title="nav.addServer" title="Add server">
             <svg width="24" height="24" viewBox="0 0 24 24">
                 <path fill="currentColor" d="M20 11H13V4C13 3.4 12.6 3 12 3C11.4 3 11 3.4 11 4V11H4C3.4 11 3 11.4 3 12C3 12.6 3.4 13 4 13H11V20C11 20.6 11.4 21 12 21C12.6 21 13 20.6 13 20V13H20C20.6 13 21 12.6 21 12C21 11.4 20.6 11 20 11Z"/>
             </svg>
@@ -82,35 +236,58 @@
 
     <!-- Channel List / DM List (Second Sidebar) -->
     <div class="channel-list" id="channelList">
+        <div class="server-header-wrap" id="serverHeaderWrap">
         <div class="server-header" id="serverHeader">
-            <div class="server-name" id="serverName">Друзья</div>
+            <div class="server-name" id="serverName">Friends</div>
             <div class="server-header__right">
-                <button type="button" class="server-dropdown" id="serverHeaderMenuBtn" aria-expanded="false" aria-haspopup="true" title="Меню"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5H7z"/></svg></button>
+                <button type="button" class="server-dropdown" id="serverHeaderMenuBtn" aria-expanded="false" aria-haspopup="true" data-i18n-title="nav.menu" data-i18n-aria="nav.menu" title="Menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M4 7h10m2 0h4M11 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0zM4 12h4m2 0h10M17 12a2 2 0 1 1-4 0 2 2 0 0 1 4 0zM4 17h10m2 0h4M11 17a2 2 0 1 1-4 0 2 2 0 0 1 4 0z"/></svg></button>
             </div>
-            <div id="serverHeaderDropdown" class="server-header-dropdown hidden" role="menu"></div>
         </div>
+        <div id="serverHeaderDropdown" class="server-header-dropdown hidden" role="menu" aria-label="Меню сервера"></div>
+        </div>
+
+        <header class="flor-mobile-group-header" id="florMobileGroupHeader" aria-hidden="true">
+            <button type="button" class="flor-mobile-group-header__back" id="florMobileGroupBack" aria-label="Назад к чатам" title="Назад">
+                <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 6l-6 6 6 6"/></svg>
+            </button>
+            <div class="flor-mobile-group-header__title">
+                <span class="flor-mobile-group-header__name" id="florMobileGroupName">Группа</span>
+                <span class="flor-mobile-group-header__sub" id="florMobileGroupSub">каналы</span>
+            </div>
+            <button type="button" class="flor-mobile-group-header__members" id="florMobileGroupMembersBtn" aria-label="Участники группы" title="Участники">
+                <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+            </button>
+            <button type="button" class="flor-mobile-group-header__menu" id="florMobileGroupMenu" aria-label="Меню группы" title="Меню">
+                <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="19" cy="12" r="1.7" fill="currentColor"/></svg>
+            </button>
+        </header>
 
         <!-- DM List (shown in Friends view) -->
         <div id="dmListView" class="dm-list-view">
-            <header class="flor-dm-hero" aria-label="Список личных сообщений">
-                <button type="button" class="flor-dm-hero__menu flor-mobile-nav-btn icon-btn" id="florDmHeroMenuBtn" aria-label="Меню: серверы и чаты" aria-expanded="false" title="Меню">
-                    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"/></svg>
+            <header class="flor-dm-hero flor-tg-hero" data-i18n-aria="dm.title" aria-label="Messages">
+                <button type="button" class="flor-tg-hero__avatar flor-mobile-nav-btn" id="florDmHeroMenuBtn" data-i18n-aria="nav.menu" data-i18n-title="nav.menu" title="Menu" aria-label="Menu" aria-expanded="false">
+                    <span class="flor-tg-hero__avatar-av friend-avatar" id="florDmHeroMeAv"></span>
                 </button>
-                <h1 class="flor-dm-hero__title">Сообщения</h1>
-                <button type="button" class="flor-dm-hero__me" id="florDmHeroMeBtn" aria-label="Мой профиль" title="Профиль">
-                    <span class="flor-dm-hero__me-av friend-avatar" id="florDmHeroMeAv"></span>
-                </button>
+                <h1 class="flor-dm-hero__title flor-tg-hero__title" data-i18n="dm.title">Messages</h1>
+                <div class="flor-tg-hero__actions">
+                    <button type="button" class="flor-tg-hero__icon-btn" id="florTgHeroSearchBtn" data-i18n-aria="common.search" data-i18n-title="common.search" title="Search" aria-label="Search">
+                        <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M11 4a7 7 0 1 0 0 14a7 7 0 0 0 0-14zm9 17l-4.35-4.35"/></svg>
+                    </button>
+                    <button type="button" class="flor-tg-hero__icon-btn" id="florDmHeroMeBtn" data-i18n-aria="common.options" data-i18n-title="common.options" title="Options" aria-label="Options">
+                        <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="19" cy="12" r="1.7" fill="currentColor"/></svg>
+                    </button>
+                </div>
             </header>
             <div class="flor-dm-stories-wrap">
                 <div class="flor-dm-stories" id="florDmStoriesStrip" aria-label="Контакты"></div>
             </div>
             <div class="flor-dm-list-card">
                 <div class="dm-search-bar">
-                    <input type="text" id="dmSearchInput" placeholder="Найти или начать беседу">
+                    <input type="text" id="dmSearchInput" data-i18n-placeholder="dm.searchPlaceholder" placeholder="Find or start a conversation">
                 </div>
                 <div class="channel-category">
                     <div class="category-header">
-                        <span>ЛИЧНЫЕ СООБЩЕНИЯ</span>
+                        <span data-i18n="dm.sectionDm">DIRECT MESSAGES</span>
                     </div>
                     <div id="dmList" class="dm-list">
                         <!-- DM items will be added here -->
@@ -128,7 +305,7 @@
                 <div class="user-avatar">U</div>
                 <div class="user-details">
                     <div class="username">Пользователь</div>
-                    <div class="user-status">В сети</div>
+                    <div class="user-status" data-i18n="friends.online">В сети</div>
                 </div>
             </div>
             <div class="user-controls">
@@ -153,6 +330,7 @@
 
     <!-- Main Content Area -->
     <div class="main-content">
+        <div class="flor-liquid-main-column">
         <!-- Server/Channel Chat View -->
         <div id="chatView" class="chat-view" style="display: none;">
             <div class="chat-header">
@@ -170,21 +348,42 @@
                     <button type="button" class="icon-btn flor-dm-header-call" id="dmCallVideoBtn" title="Видеозвонок" aria-label="Видеозвонок" hidden>
                         <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
                     </button>
-                    <button type="button" class="icon-btn" id="exportChatBtn" title="Скачать историю чата" aria-label="Скачать историю чата"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3v10.2l2.6-2.6 1.4 1.4-5 5-5-5 1.4-1.4 2.6 2.6V3h2zm-7 14h14v4H5v-4h2z"/></svg></button>
+                    <button type="button" class="icon-btn" id="aiChatDigestBtn" title="ИИ: краткий пересказ чата" aria-label="ИИ: краткий пересказ чата"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M12 4l1.55 3.45L17 9l-3.45 1.55L12 14l-1.55-3.45L7 9l3.45-1.55L12 4zM19 3l.7 1.55L21.25 5l-1.55.7L19 7.25l-.7-1.55L16.75 5l1.55-.7L19 3zM5 12l.8 1.8L7.6 14.6l-1.8.8L5 17.2l-.8-1.8-1.8-.8 1.8-.8L5 12z"/><path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" d="M8.5 19.5c1.1.58 2.27.87 3.5.87s2.4-.29 3.5-.87"/></svg></button>
                     <button type="button" class="icon-btn" id="bookmarksPanelBtn" title="Закладки" aria-label="Закладки"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 2h12a2 2 0 012 2v18l-8-4-8 4V4a2 2 0 012-2zm0 2v14.06l6-3 6 3V4H6z"/></svg></button>
-                    <button type="button" class="icon-btn" id="membersBtn" title="Участники и приглашения" hidden>
-                        <svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M14 8.00598C14 10.211 12.206 12.006 10 12.006C7.795 12.006 6 10.211 6 8.00598C6 5.80098 7.795 4.00598 10 4.00598C12.206 4.00598 14 5.80098 14 8.00598ZM2 19.006C2 15.473 5.29 13.006 10 13.006C14.711 13.006 18 15.473 18 19.006V20.006H2V19.006Z"/></svg>
-                    </button>
                 </div>
             </div>
+            <div class="flor-pinned-bar" id="florPinnedBar" hidden></div>
             <div class="messages" id="messagesContainer"></div>
             <div class="message-input-container">
+                <div class="flor-reply-draft" id="florReplyDraft" hidden>
+                    <div class="flor-reply-draft__body">
+                        <span class="flor-reply-draft__line">
+                            <span class="flor-reply-draft__in-reply" id="florReplyDraftAuthor"></span>
+                            <span class="flor-reply-draft__preview" id="florReplyDraftPreview"></span>
+                        </span>
+                    </div>
+                    <button type="button" class="flor-reply-draft__close" id="florReplyDraftClose" title="Отменить ответ" aria-label="Отменить ответ">×</button>
+                </div>
+                <div class="flor-voice-rec-banner" id="florVoiceRecBanner" hidden aria-live="polite">
+                    <span class="flor-voice-rec-banner__glow" aria-hidden="true"></span>
+                    <div class="flor-voice-rec-banner__left">
+                        <span class="flor-voice-rec-banner__dot"></span>
+                        <div class="flor-voice-rec-banner__waves" aria-hidden="true">
+                            <span></span><span></span><span></span><span></span><span></span><span></span>
+                        </div>
+                    </div>
+                    <div class="flor-voice-rec-banner__body">
+                        <strong class="flor-voice-rec-banner__title">Запись голосового</strong>
+                        <span class="flor-voice-rec-banner__timer" id="florVoiceRecTimer">0:00</span>
+                    </div>
+                    <p class="flor-voice-rec-banner__hint">Нажмите кнопку микрофона ещё раз, чтобы отправить · Esc — отмена</p>
+                </div>
                 <div class="message-input-wrapper">
-                    <button type="button" class="attach-btn" title="Вложение"><svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C11.5 2 11 2.19 10.59 2.59L2.59 10.59C1.8 11.37 1.8 12.63 2.59 13.41C3.37 14.2 4.63 14.2 5.41 13.41L11 7.83V16C11 16.55 11.45 17 12 17C12.55 17 13 16.55 13 16V7.83L18.59 13.41C19.37 14.2 20.63 14.2 21.41 13.41C22.2 12.63 22.2 11.37 21.41 10.59L13.41 2.59C13 2.19 12.5 2 12 2Z"/></svg></button>
-                    <input type="text" id="messageInput" placeholder="Написать сообщение…" enterkeyhint="send" />
-                    <div class="emoji-btn" title="Эмодзи"><svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.486 2 2 6.486 2 12C2 17.514 6.486 22 12 22C17.514 22 22 17.514 22 12C22 6.486 17.514 2 12 2ZM15.5 8C16.328 8 17 8.672 17 9.5C17 10.328 16.328 11 15.5 11C14.672 11 14 10.328 14 9.5C14 8.672 14.672 8 15.5 8ZM8.5 8C9.328 8 10 8.672 10 9.5C10 10.328 9.328 11 8.5 11C7.672 11 7 10.328 7 9.5C7 8.672 7.672 8 8.5 8ZM12 17.5C9.656 17.5 7.586 16.019 6.673 13.852C6.594 13.643 6.673 13.407 6.852 13.266C7.031 13.125 7.281 13.117 7.469 13.242C8.766 14.109 10.352 14.5 12 14.5C13.648 14.5 15.234 14.109 16.531 13.242C16.719 13.117 16.969 13.125 17.148 13.266C17.327 13.407 17.406 13.643 17.327 13.852C16.414 16.019 14.344 17.5 12 17.5Z"/></svg></div>
-                    <button type="button" class="message-send-btn" id="messageSendBtn" title="Отправить" aria-label="Отправить"><span class="message-send-btn__plane" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></span></button>
-                    <button type="button" class="voice-msg-btn" id="voiceMessageBtn" title="Голосовое сообщение" aria-label="Голосовое сообщение" aria-pressed="false">
+                    <button type="button" class="attach-btn" data-i18n-title="chat.attach" data-i18n-aria="chat.attach" title="Attach file" aria-label="Attach file"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M21 12.2l-7.9 7.9a5.3 5.3 0 01-7.5-7.5l8.4-8.4a3.65 3.65 0 115.16 5.16l-8.56 8.57a2.05 2.05 0 01-2.9-2.9l7.18-7.18"/></svg></button>
+                    <input type="text" id="messageInput" data-i18n-placeholder="chat.messagePlaceholder" placeholder="Write a message…" enterkeyhint="send" />
+                    <div class="emoji-btn" data-i18n-title="chat.emoji" title="Emoji"><svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.486 2 2 6.486 2 12C2 17.514 6.486 22 12 22C17.514 22 22 17.514 22 12C22 6.486 17.514 2 12 2ZM15.5 8C16.328 8 17 8.672 17 9.5C17 10.328 16.328 11 15.5 11C14.672 11 14 10.328 14 9.5C14 8.672 14.672 8 15.5 8ZM8.5 8C9.328 8 10 8.672 10 9.5C10 10.328 9.328 11 8.5 11C7.672 11 7 10.328 7 9.5C7 8.672 7.672 8 8.5 8ZM12 17.5C9.656 17.5 7.586 16.019 6.673 13.852C6.594 13.643 6.673 13.407 6.852 13.266C7.031 13.125 7.281 13.117 7.469 13.242C8.766 14.109 10.352 14.5 12 14.5C13.648 14.5 15.234 14.109 16.531 13.242C16.719 13.117 16.969 13.125 17.148 13.266C17.327 13.407 17.406 13.643 17.327 13.852C16.414 16.019 14.344 17.5 12 17.5Z"/></svg></div>
+                    <button type="button" class="message-send-btn" id="messageSendBtn" data-i18n-title="chat.send" data-i18n-aria="chat.send" title="Send" aria-label="Send"><span class="message-send-btn__plane" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></span></button>
+                    <button type="button" class="voice-msg-btn" id="voiceMessageBtn" data-i18n-title="chat.voiceRec" data-i18n-aria="chat.voiceRec" title="Voice message" aria-label="Voice message" aria-pressed="false">
                         <svg class="voice-msg-btn__icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                             <rect class="voice-msg-btn__mic-body" x="9.35" y="3" width="5.3" height="9.8" rx="2.65" />
                             <path class="voice-msg-btn__mic-stroke" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" d="M6.75 12.25v.85a5.25 5.25 0 0010.5 0v-.85M12 17.1V19M8.35 21h7.3" />
@@ -201,13 +400,13 @@
                     <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"/></svg>
                 </button>
                 <div class="friends-tabs">
-                    <button type="button" class="friends-tab active" data-tab="online">В сети</button>
-                    <button type="button" class="friends-tab" data-tab="all">Все</button>
+                    <button type="button" class="friends-tab active" data-tab="online" data-i18n="friends.online">В сети</button>
+                    <button type="button" class="friends-tab" data-tab="all" data-i18n="friends.all">Все</button>
                     <button type="button" class="friends-tab friends-tab--pending" data-tab="pending">
-                        <span class="friends-tab__label">Запросы</span>
+                        <span class="friends-tab__label" data-i18n="friends.requests">Запросы</span>
                         <span class="friends-tab-pending-dot" hidden aria-hidden="true"></span>
                     </button>
-                    <button type="button" class="friends-tab" data-tab="add">Добавить</button>
+                    <button type="button" class="friends-tab" data-tab="add" data-i18n="friends.add">Добавить</button>
                 </div>
             </div>
             <div class="friends-content-wrapper">
@@ -216,11 +415,11 @@
                 <div id="friendsPending" class="friends-list"></div>
                 <div id="friendsAdd" class="friends-list">
                     <div class="add-friend-form">
-                        <h3>ДОБАВИТЬ ДРУГА</h3>
-                        <p>Найдите пользователя по имени и отправьте заявку в друзья.</p>
+                        <h3 data-i18n="friends.addFriend">ADD FRIEND</h3>
+                        <p data-i18n="friends.addFriendLead">Find a user by name and send a friend request.</p>
                         <div class="add-friend-input-wrapper">
-                            <input type="text" id="searchUserInput" placeholder="Имя пользователя" />
-                            <button id="searchUserBtn">Найти</button>
+                            <input type="text" id="searchUserInput" data-i18n-placeholder="friends.usernamePh" placeholder="Username" />
+                            <button id="searchUserBtn" data-i18n="friends.find">Find</button>
                         </div>
                         <div id="searchResults"></div>
                     </div>
@@ -228,49 +427,63 @@
             </div>
         </div>
 
-        <nav class="flor-mobile-tabbar" id="florMobileTabbar" aria-label="Нижнее меню">
-            <div class="flor-mobile-tabbar__shell flor-mobile-tabbar__shell--kit">
-                <div class="flor-mobile-tabbar__inner flor-mobile-tabbar__inner--kit">
-                    <button type="button" class="flor-mobile-tab flor-mobile-tab--kit" id="florTabChats" title="Чаты" aria-label="Чаты">
-                        <svg class="flor-mobile-tab__icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none">
-                            <path
-                                d="M12 19a7.5 7.5 0 01-3.9-1.1L5 20v-4.2A7.5 7.5 0 1112 19z"
-                                stroke="currentColor"
-                                stroke-width="1.75"
-                                stroke-linejoin="round"
-                            />
-                        </svg>
-                    </button>
-                    <button type="button" class="flor-mobile-tab flor-mobile-tab--kit" id="florTabFriends" title="Друзья" aria-label="Друзья">
-                        <svg class="flor-mobile-tab__icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none">
-                            <path
-                                d="M12 12a3.5 3.5 0 100-7 3.5 3.5 0 000 7zM5.5 20.5v-.5c0-2.5 2.8-4.5 6.5-4.5s6.5 2 6.5 4.5v.5"
-                                stroke="currentColor"
-                                stroke-width="1.75"
-                                stroke-linecap="round"
-                            />
-                        </svg>
-                    </button>
-                    <button type="button" class="flor-mobile-tab flor-mobile-tab--fab-kit" id="florTabCompose" title="Создать сервер" aria-label="Создать сервер">
-                        <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-                    </button>
-                    <button type="button" class="flor-mobile-tab flor-mobile-tab--kit" id="florTabDiscover" title="Найти людей" aria-label="Добавить друга">
-                        <svg class="flor-mobile-tab__icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none">
-                            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.75" />
-                            <path d="M12 7v10M9.5 9.5l2.5-2.5 2.5 2.5M9.5 14.5l2.5 2.5 2.5-2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                        </svg>
-                    </button>
-                    <button type="button" class="flor-mobile-tab flor-mobile-tab--kit" id="florTabSettings" title="Настройки" aria-label="Настройки">
-                        <svg class="flor-mobile-tab__icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
-                            <path
-                                fill="currentColor"
-                                d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.488.488 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"
-                            />
-                        </svg>
-                    </button>
-                </div>
+        <button type="button" class="flor-mobile-fab" id="florMobileFab" data-i18n-aria="nav.newChat" data-i18n-title="nav.newChat" aria-label="New chat" title="New chat">
+            <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+        </button>
+        <nav class="flor-mobile-tabbar flor-mobile-tabbar--v2" id="florMobileTabbar" data-i18n-aria="mobile.tabbarNav" aria-label="Bottom navigation">
+            <div class="flor-mobile-tabbar__inner--v2">
+                <button type="button" class="flor-mobile-tab--v2" id="florTabChats" data-i18n-title="mobile.tabChats" data-i18n-aria="mobile.tabChats" title="Chats" aria-label="Chats">
+                    <svg class="flor-mobile-tab__icon" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true" fill="none">
+                        <path d="M4 6.5C4 5.12 5.12 4 6.5 4h11C18.88 4 20 5.12 20 6.5v8c0 1.38-1.12 2.5-2.5 2.5H9l-4 4v-4H6.5A2.5 2.5 0 0 1 4 14.5v-8z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+                    </svg>
+                    <span class="flor-mobile-tab__label" data-i18n="mobile.tabChats">Chats</span>
+                    <span class="flor-mobile-tab__badge" id="florTabChatsBadge" hidden aria-hidden="true"></span>
+                </button>
+                <button type="button" class="flor-mobile-tab--v2" id="florTabFriends" data-i18n-title="mobile.tabFriends" data-i18n-aria="mobile.tabFriends" title="Friends" aria-label="Friends">
+                    <svg class="flor-mobile-tab__icon" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true" fill="none">
+                        <circle cx="9" cy="9" r="3.5" stroke="currentColor" stroke-width="1.8" />
+                        <path d="M3 19.5c0-2.8 2.7-5 6-5s6 2.2 6 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                        <path d="M15 11.5a3 3 0 0 0 0-6M16.5 19.5c0-2-1.2-3.7-3-4.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                    </svg>
+                    <span class="flor-mobile-tab__label" data-i18n="mobile.tabFriends">Friends</span>
+                    <span class="flor-mobile-tab__badge" id="florTabFriendsBadge" hidden aria-hidden="true"></span>
+                </button>
+                <button type="button" class="flor-mobile-tab--v2" id="florTabServers" data-i18n-title="mobile.tabServers" data-i18n-aria="mobile.tabServers" title="Servers" aria-label="Servers">
+                    <svg class="flor-mobile-tab__icon" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true" fill="none">
+                        <rect x="3.5" y="4.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8" />
+                        <rect x="13.5" y="4.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8" />
+                        <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8" />
+                        <rect x="13.5" y="13.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8" />
+                    </svg>
+                    <span class="flor-mobile-tab__label" data-i18n="mobile.tabServers">Servers</span>
+                </button>
+                <button type="button" class="flor-mobile-tab--v2" id="florTabProfile" data-i18n-title="mobile.tabProfile" data-i18n-aria="mobile.tabProfile" title="Profile" aria-label="Profile">
+                    <svg class="flor-mobile-tab__icon" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true" fill="none">
+                        <circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.8" />
+                        <path d="M4 20c0-3.5 3.6-6 8-6s8 2.5 8 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                    </svg>
+                    <span class="flor-mobile-tab__label" data-i18n="mobile.tabProfile">Profile</span>
+                </button>
             </div>
         </nav>
+        </div>
+        <aside class="flor-liquid-info-panel" id="florLiquidInfoPanel" data-i18n-aria="liquid.aboutChat" aria-label="About chat">
+            <div class="flor-liquid-info-panel__inner flor-scroll">
+                <div id="florLiquidInfoAvatar" class="flor-liquid-profile-big" aria-hidden="true"></div>
+                <div class="flor-liquid-info-heading">
+                    <h3 class="flor-liquid-info-title" id="florLiquidInfoTitle">FLOR</h3>
+                    <p class="flor-liquid-info-sub" id="florLiquidInfoSubtitle">Choose a chat on the left</p>
+                </div>
+                <div class="flor-liquid-info-hint" id="florLiquidInfoHint" data-i18n="liquid.hintDefault">
+                </div>
+                <section class="flor-liquid-members" id="florLiquidMembersSection" hidden data-i18n-aria="liquid.members" aria-label="Group members">
+                    <h4 class="flor-liquid-members__title" id="florLiquidMembersTitle" data-i18n="server.members">Members</h4>
+                    <p class="flor-liquid-members__hint" id="florLiquidMembersHint"></p>
+                    <ul class="flor-liquid-members__list" id="florLiquidMembersList" role="list"></ul>
+                </section>
+                <div class="flor-liquid-media-grid" id="florLiquidMediaGrid" aria-hidden="true"></div>
+            </div>
+        </aside>
     </div>
     </div>
     </div>
@@ -293,7 +506,7 @@
                     <span class="flor-fs-icon-enter" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg></span>
                     <span class="flor-fs-icon-exit" hidden aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path fill="currentColor" d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg></span>
                 </button>
-                <button type="button" class="close-call-btn" id="closeCallBtn" title="Покинуть звонок" aria-label="Покинуть звонок"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
+                <button type="button" class="close-call-btn" id="closeCallBtn" title="Покинуть звонок" aria-label="Покинуть звонок"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
             </div>
         </div>
         <div id="callRosterList" class="call-roster-list flor-scroll" aria-label="Участники голоса"></div>
@@ -319,7 +532,11 @@
                 </button>
                 <span class="call-controls-sep flor-call-meet-only" aria-hidden="true"></span>
                 <button type="button" id="callHangupBarBtn" class="call-control-btn call-control-btn--hangup flor-call-meet-only" title="Завершить звонок" aria-label="Завершить звонок">
-                    <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.55-.11-.75-.34L1.39 14.1c-.29-.34-.26-.86.09-1.16C4.99 10.46 8.37 9 12 9s7.01 1.46 9.52 3.94c.35.3.38.82.09 1.16l-1.38 1.65c-.2.23-.47.34-.75.34-.27 0-.52-.1-.7-.28-.79-.73-1.68-1.36-2.66-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
+                    <!-- Lucide phone-off: узнаваемая «трубка + черта»; stroke, overflow visible в .flor-call-shell -->
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91" />
+                        <line x1="22" y1="2" x2="2" y2="22" />
+                    </svg>
                 </button>
             </div>
         </div>
@@ -351,48 +568,58 @@
         </div>
     </div>
 
-    <!-- Настройки сервера (владелец) -->
-    <div id="serverSettingsOverlay" class="settings-overlay hidden" aria-hidden="true">
-        <div class="settings-panel settings-panel--wide flor-scroll" role="dialog" aria-labelledby="serverSettingsTitle">
+    <!-- Настройки сервера -->
+    <div id="serverSettingsOverlay" class="settings-overlay settings-overlay--server hidden" aria-hidden="true">
+        <div class="settings-panel settings-panel--wide flor-server-settings-panel" role="dialog" aria-labelledby="serverSettingsTitle">
             <h2 id="serverSettingsTitle">Настройки сервера</h2>
-            <p class="settings-hint" style="margin-top: -6px;">Название, аватар и каналы группы. Приглашайте друзей по нику из панели «Участники» в шапке чата — как в Telegram или Discord.</p>
-            <div class="form-group-settings">
-                <label for="serverSettingsName">Название</label>
-                <input type="text" id="serverSettingsName" maxlength="80" />
-            </div>
-            <div class="form-group-settings">
-                <label>Аватар группы (картинка)</label>
-                <div class="flor-profile-upload-actions">
-                    <input type="file" id="serverSettingsIconFile" accept="image/jpeg,image/png,image/gif,image/webp" class="visually-hidden" />
-                    <button type="button" class="settings-btn settings-btn--secondary" id="serverSettingsIconPickBtn">Загрузить изображение…</button>
-                </div>
-            </div>
-            <div class="form-group-settings">
-                <label for="serverSettingsIcon">Или буквы / эмодзи (до 16 символов)</label>
-                <input type="text" id="serverSettingsIcon" maxlength="16" autocomplete="off" />
-            </div>
-            <div id="serverSettingsOwnerExtras" class="server-settings-owner-extras flor-server-settings-owner hidden">
-                <h3 class="settings-subheading">Новый канал</h3>
-                <p class="settings-hint flor-server-settings-mini-hint">Только владелец может создавать и удалять каналы.</p>
+            <p class="settings-hint flor-server-settings-lead">Название, аватар и каналы группы. Приглашайте друзей через панель участников.</p>
+            <div class="flor-server-settings-body flor-scroll">
                 <div class="form-group-settings">
-                    <label for="serverSettingsNewChName">Имя канала</label>
-                    <input type="text" id="serverSettingsNewChName" maxlength="40" placeholder="например, музыка" autocomplete="off" />
+                    <label for="serverSettingsName">Название</label>
+                    <input type="text" id="serverSettingsName" maxlength="80" />
                 </div>
                 <div class="form-group-settings">
-                    <label for="serverSettingsNewChType">Тип</label>
-                    <select id="serverSettingsNewChType">
-                        <option value="text">Текстовый</option>
-                        <option value="voice">Голосовой</option>
-                    </select>
+                    <label>Аватар группы (картинка)</label>
+                    <div class="flor-profile-upload-actions">
+                        <input type="file" id="serverSettingsIconFile" accept="image/jpeg,image/png,image/gif,image/webp" class="visually-hidden" />
+                        <button type="button" class="settings-btn settings-btn--secondary" id="serverSettingsIconPickBtn">Загрузить изображение…</button>
+                    </div>
                 </div>
-                <button type="button" class="settings-btn primary flor-server-settings-create-ch" id="serverSettingsCreateChBtn">Создать канал</button>
-                <h3 class="settings-subheading">Удалить канал</h3>
-                <p class="settings-hint flor-server-settings-mini-hint">Безвозвратно. Должен остаться хотя бы один текстовый и один голосовой канал.</p>
                 <div class="form-group-settings">
-                    <label for="serverSettingsDeleteChSelect">Канал</label>
-                    <select id="serverSettingsDeleteChSelect"></select>
+                    <label for="serverSettingsIcon">Или буквы / эмодзи (до 16 символов)</label>
+                    <input type="text" id="serverSettingsIcon" maxlength="16" autocomplete="off" />
                 </div>
-                <button type="button" class="settings-btn danger" id="serverSettingsDeleteChBtn">Удалить выбранный канал</button>
+                <div id="serverSettingsOwnerExtras" class="server-settings-owner-extras flor-server-settings-owner hidden">
+                    <h3 class="settings-subheading">Новый канал</h3>
+                    <p class="settings-hint flor-server-settings-mini-hint">Только владелец может создавать и удалять каналы.</p>
+                    <div class="flor-server-settings-ch-row">
+                        <div class="form-group-settings">
+                            <label for="serverSettingsNewChName">Имя канала</label>
+                            <input type="text" id="serverSettingsNewChName" maxlength="40" placeholder="например, музыка" autocomplete="off" />
+                        </div>
+                        <div class="form-group-settings flor-server-settings-ch-type">
+                            <label for="serverSettingsNewChType">Тип</label>
+                            <select id="serverSettingsNewChType">
+                                <option value="text">Текстовый</option>
+                                <option value="voice">Голосовой</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="button" class="settings-btn primary flor-server-settings-create-ch" id="serverSettingsCreateChBtn">Создать канал</button>
+                    <h3 class="settings-subheading">Удалить канал</h3>
+                    <p class="settings-hint flor-server-settings-mini-hint">Безвозвратно. Должен остаться хотя бы один текстовый и один голосовой канал.</p>
+                    <div class="form-group-settings">
+                        <label for="serverSettingsDeleteChSelect">Канал</label>
+                        <select id="serverSettingsDeleteChSelect"></select>
+                    </div>
+                    <button type="button" class="settings-btn danger" id="serverSettingsDeleteChBtn">Удалить выбранный канал</button>
+                    <h3 class="settings-subheading">Ссылки-приглашения</h3>
+                    <p class="settings-hint flor-server-settings-mini-hint">Создавайте ссылки для входа в группу. При рейде удалите старую ссылку и сгенерируйте новую.</p>
+                    <div class="settings-actions settings-actions--row" style="margin-top: 10px;">
+                        <button type="button" class="settings-btn primary" id="serverInviteCreateBtn">Создать новую ссылку</button>
+                    </div>
+                    <div id="serverInviteList" class="server-invite-list flor-scroll"></div>
+                </div>
             </div>
             <div class="settings-actions settings-actions--row flor-server-settings-footer-actions">
                 <button type="button" class="settings-btn primary" id="serverSettingsSaveBtn">Сохранить</button>
@@ -448,152 +675,215 @@
     </div>
 
     <!-- Настройки: центр с вкладками -->
+    <div id="aiDigestOverlay" class="settings-overlay hidden" aria-hidden="true">
+        <div class="settings-panel settings-panel--wide flor-ai-digest-panel" role="dialog" aria-labelledby="aiDigestTitle">
+            <h2 id="aiDigestTitle">Краткий пересказ чата</h2>
+            <p class="settings-hint" id="aiDigestHint">Собираю сообщения…</p>
+            <div id="aiDigestBody" class="flor-ai-digest-body flor-scroll"></div>
+            <div class="settings-actions settings-actions--row flor-ai-digest-actions">
+                <button type="button" class="settings-btn primary" id="aiDigestCopyBtn">Копировать</button>
+                <button type="button" class="settings-btn" id="aiDigestCloseBtn">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
     <div id="settingsOverlay" class="settings-overlay hidden" aria-hidden="true">
         <div class="settings-hub" role="dialog" aria-labelledby="settingsTitle">
             <div class="settings-hub-header">
                 <div class="settings-hub-header-text">
-                    <h2 id="settingsTitle">Настройки</h2>
-                    <p class="settings-hub-subtitle">Профиль, уведомления, безопасность и оформление</p>
+                    <h2 id="settingsTitle" data-i18n="settings.title">Settings</h2>
+                    <p class="settings-hub-subtitle" data-i18n="settings.subtitle">Profile, notifications, security and appearance</p>
                 </div>
-                <button type="button" class="settings-hub-close" id="settingsCloseBtn" aria-label="Закрыть"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
+                <button type="button" class="settings-hub-close" id="settingsCloseBtn" data-i18n-aria="common.close" aria-label="Close"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
             </div>
             <div class="settings-hub-body">
-                <nav class="settings-nav" id="settingsNav" aria-label="Разделы настроек">
-                    <button type="button" class="settings-nav-btn active" data-panel="profile">Профиль</button>
-                    <button type="button" class="settings-nav-btn" data-panel="privacy">Приватность</button>
-                    <button type="button" class="settings-nav-btn" data-panel="notifications">Уведомления</button>
-                    <button type="button" class="settings-nav-btn" data-panel="security">Безопасность</button>
-                    <button type="button" class="settings-nav-btn" data-panel="interface">Интерфейс</button>
-                    <button type="button" class="settings-nav-btn" data-panel="devices">Микрофон и звук</button>
-                    <button type="button" class="settings-nav-btn" data-panel="appearance">Чат и фон</button>
+                <nav class="settings-nav" id="settingsNav" data-i18n-aria="settings.title" aria-label="Settings">
+                    <button type="button" class="settings-nav-btn active" data-panel="profile" data-i18n="settings.navProfile">Profile</button>
+                    <button type="button" class="settings-nav-btn" data-panel="privacy" data-i18n="settings.navPrivacy">Privacy</button>
+                    <button type="button" class="settings-nav-btn" data-panel="notifications" data-i18n="settings.navNotifications">Notifications</button>
+                    <button type="button" class="settings-nav-btn" data-panel="security" data-i18n="settings.navSecurity">Security</button>
+                    <button type="button" class="settings-nav-btn" data-panel="interface" data-i18n="settings.navInterface">Interface</button>
+                    <button type="button" class="settings-nav-btn" data-panel="devices" data-i18n="settings.navDevices">Microphone &amp; sound</button>
+                    <button type="button" class="settings-nav-btn" data-panel="appearance" data-i18n="settings.navAppearance">Chat &amp; background</button>
+                    <button type="button" class="settings-nav-btn" data-panel="ai" data-i18n="settings.navAi">AI in chats</button>
                 </nav>
                 <div class="settings-panels flor-scroll">
                     <section class="settings-panel-page active" data-panel="profile">
-                        <h3>Профиль</h3>
-                        <p class="settings-hint settings-callout">Аватар и баннер сохраняются в аккаунте. Отображаемое имя внизу слева — только в этом браузере.</p>
+                        <h3 data-i18n="settings.profileH">Profile</h3>
+                        <p class="settings-hint settings-callout" data-i18n="settings.profileCallout">Avatar and banner are saved to your account. The name at the bottom left is only in this browser.</p>
                         <div class="form-group-settings flor-profile-upload-row">
-                            <label>Фото профиля</label>
+                            <label data-i18n="settings.photo">Profile photo</label>
                             <div class="flor-profile-upload-actions">
                                 <input type="file" id="settingsAvatarFile" accept="image/jpeg,image/png,image/gif,image/webp" class="visually-hidden" />
-                                <button type="button" class="settings-btn settings-btn--secondary" id="settingsAvatarPickBtn">Выбрать файл…</button>
-                                <span class="settings-hint" id="settingsAvatarFileHint">JPEG, PNG, GIF, WebP до 4 МБ</span>
+                                <button type="button" class="settings-btn settings-btn--secondary" id="settingsAvatarPickBtn" data-i18n="settings.pickFile">Choose file…</button>
+                                <span class="settings-hint" id="settingsAvatarFileHint" data-i18n="settings.photoHint">JPEG, PNG, GIF, WebP up to 4 MB</span>
                             </div>
                         </div>
                         <div class="form-group-settings flor-profile-upload-row">
-                            <label>Баннер (фон карточки профиля)</label>
+                            <label data-i18n="settings.banner">Banner</label>
                             <div class="flor-profile-upload-actions">
                                 <input type="file" id="settingsBannerFile" accept="image/jpeg,image/png,image/gif,image/webp" class="visually-hidden" />
-                                <button type="button" class="settings-btn settings-btn--secondary" id="settingsBannerPickBtn">Выбрать файл…</button>
+                                <button type="button" class="settings-btn settings-btn--secondary" id="settingsBannerPickBtn" data-i18n="settings.pickFile">Choose file…</button>
                             </div>
                         </div>
                         <div class="form-group-settings">
-                            <label for="settingsDisplayName">Как показывать имя внизу слева</label>
+                            <label for="settingsDisplayName" data-i18n="settings.displayName">Name at bottom left</label>
                             <input type="text" id="settingsDisplayName" maxlength="64" autocomplete="name" />
                         </div>
                         <div class="form-group-settings">
-                            <label for="settingsBio">О себе (видят друзья в профиле)</label>
-                            <textarea id="settingsBio" rows="3" maxlength="500" placeholder="Коротко о себе…"></textarea>
+                            <label for="settingsBio" data-i18n="settings.bio">About</label>
+                            <textarea id="settingsBio" rows="3" maxlength="500" data-i18n-placeholder="settings.bioPlaceholder" placeholder="A few words about yourself…"></textarea>
                         </div>
                         <div class="form-group-settings">
-                            <label for="settingsAvatarInput">Или буквы в аватаре (до 4 символов)</label>
+                            <label for="settingsAvatarInput" data-i18n="settings.avatarLetters">Text avatar (up to 4 characters)</label>
                             <input type="text" id="settingsAvatarInput" maxlength="4" autocomplete="off" />
                         </div>
                     </section>
                     <section class="settings-panel-page" data-panel="privacy">
-                        <h3>Приватность</h3>
-                        <p class="settings-hint settings-callout">Дополнительные ограничения для интерфейса. Основные правила чатов задаёт администратор сервера.</p>
-                        <label class="checkbox-row"><input type="checkbox" id="privacyDmFriendsOnly" /> Писать в личку могут только друзья</label>
-                        <label class="checkbox-row"><input type="checkbox" id="privacyGroupInvitesFriends" /> Приглашения в группы только от друзей</label>
-                        <label class="checkbox-row"><input type="checkbox" id="privacyHideOnline" /> Показывать статус «Невидимка»</label>
+                        <h3 data-i18n="settings.privacyH">Privacy</h3>
+                        <p class="settings-hint settings-callout" data-i18n="settings.privacyCallout">Extra UI limits. Main chat rules are set by the server admin.</p>
+                        <label class="checkbox-row"><input type="checkbox" id="privacyDmFriendsOnly" /> <span data-i18n="settings.dmFriendsOnly">Only friends can message me</span></label>
+                        <label class="checkbox-row"><input type="checkbox" id="privacyGroupInvitesFriends" /> <span data-i18n="settings.groupInvitesFriends">Group invites only from friends</span></label>
+                        <label class="checkbox-row"><input type="checkbox" id="privacyHideOnline" /> <span data-i18n="settings.hideOnline">Show “Invisible” status</span></label>
                     </section>
                     <section class="settings-panel-page" data-panel="notifications">
-                        <h3>Уведомления</h3>
-                        <label class="checkbox-row"><input type="checkbox" id="settingsNotifyDesktop" /> Уведомления рабочего стола</label>
-                        <label class="checkbox-row"><input type="checkbox" id="settingsSoundInApp" /> Звук в открытом чате</label>
-                        <h4>Не беспокоить</h4>
-                        <label class="checkbox-row"><input type="checkbox" id="dndEnabled" /> Включить по расписанию</label>
+                        <h3 data-i18n="settings.notifH">Notifications</h3>
+                        <label class="checkbox-row"><input type="checkbox" id="settingsNotifyDesktop" /> <span data-i18n="settings.desktopNotif">Desktop notifications</span></label>
+                        <label class="checkbox-row"><input type="checkbox" id="settingsSoundInApp" /> <span data-i18n="settings.soundInApp">Sound in open chat</span></label>
+                        <h4 data-i18n="settings.dndH">Do not disturb</h4>
+                        <label class="checkbox-row"><input type="checkbox" id="dndEnabled" /> <span data-i18n="settings.dndOn">Enable on schedule</span></label>
                         <div class="form-row">
-                            <label>С <input type="time" id="dndStart" value="22:00" /></label>
-                            <label>до <input type="time" id="dndEnd" value="08:00" /></label>
+                            <label><span data-i18n="settings.dndFrom">From</span> <input type="time" id="dndStart" value="22:00" /></label>
+                            <label><span data-i18n="settings.dndTo">to</span> <input type="time" id="dndEnd" value="08:00" /></label>
                         </div>
                     </section>
                     <section class="settings-panel-page" data-panel="security">
-                        <h3>Безопасность</h3>
-                        <p class="settings-hint settings-callout">Недавние входы в этом браузере (для вашего контроля).</p>
+                        <h3 data-i18n="settings.securityH">Security</h3>
+                        <div
+                            class="settings-qr-splash"
+                            id="florSettingsQrSignInRegion"
+                            role="region"
+                            data-i18n-aria="settings.qrSignInH"
+                            aria-label="QR sign-in"
+                        >
+                            <p class="settings-qr-splash__title" data-i18n="settings.qrSignInH">Sign in on another device with QR</p>
+                            <p class="settings-hint" data-i18n="settings.qrSignInP">
+                                Scan the QR shown on your PC to approve sign-in there. You stay signed in on this device.
+                            </p>
+                            <button type="button" class="settings-btn primary" id="florSettingsOpenQrSignIn" data-i18n="settings.qrSignInBtn">Scan QR code</button>
+                        </div>
+                        <p class="settings-hint settings-callout" data-i18n="settings.securityCallout">Recent sign-ins in this browser (for your control).</p>
                         <div id="loginHistoryList" class="login-history-list"></div>
-                        <h4>Смена пароля</h4>
-                        <div class="form-group-settings">
-                            <label for="pwdCurrent">Текущий пароль</label>
-                            <input type="password" id="pwdCurrent" autocomplete="current-password" />
+                        <h4 data-i18n="settings.changePwd">Change password</h4>
+                        <p class="settings-hint" id="florPwdChangeLead" data-i18n="settings.pwdChangeLead">
+                            First enter your current password, then the new one on the next step.
+                        </p>
+                        <div id="florPwdChangeStep1" class="flor-pwd-change-step">
+                            <div class="form-group-settings">
+                                <label for="pwdCurrent" data-i18n="settings.currentPwd">Current password</label>
+                                <input type="password" id="pwdCurrent" autocomplete="current-password" />
+                            </div>
+                            <div class="settings-actions settings-actions--row flor-pwd-change-actions">
+                                <button type="button" class="settings-btn primary" id="florPwdChangeNext" data-i18n="settings.pwdChangeNext">Next</button>
+                            </div>
                         </div>
-                        <div class="form-group-settings">
-                            <label for="pwdNew">Новый пароль</label>
-                            <input type="password" id="pwdNew" autocomplete="new-password" />
+                        <div id="florPwdChangeStep2" class="flor-pwd-change-step" hidden>
+                            <div class="form-group-settings">
+                                <label for="pwdNew" data-i18n="settings.newPwd">New password</label>
+                                <input type="password" id="pwdNew" autocomplete="new-password" />
+                            </div>
+                            <div class="settings-actions settings-actions--row flor-pwd-change-actions">
+                                <button type="button" class="settings-btn settings-btn--secondary" id="florPwdChangeBack" data-i18n="settings.pwdChangeBack">Back</button>
+                                <button type="button" class="settings-btn primary" id="pwdChangeBtn" data-i18n="settings.changePwdBtn">Change password</button>
+                            </div>
                         </div>
-                        <button type="button" class="settings-btn primary" id="pwdChangeBtn">Сменить пароль</button>
                     </section>
                     <section class="settings-panel-page" data-panel="interface">
-                        <h3>Интерфейс</h3>
-                        <p class="settings-hint settings-callout">Тема также доступна кнопкой внизу слева.</p>
-                        <label class="checkbox-row"><input type="checkbox" id="settingsCompactMessages" /> Компактные сообщения</label>
+                        <h3 data-i18n="settings.interfaceH">Interface</h3>
                         <div class="form-group-settings">
-                            <label for="fontScaleRange">Масштаб шрифта (<span id="fontScaleVal">100</span>%)</label>
+                            <label for="florSettingsLocale" data-i18n="settings.language">Interface language</label>
+                            <select id="florSettingsLocale" aria-describedby="florSettingsLocaleHint"></select>
+                            <p class="settings-hint" id="florSettingsLocaleHint" data-i18n="settings.languageHint">Text and layout direction update after you save.</p>
+                        </div>
+                        <p class="settings-hint settings-callout" data-i18n="settings.interfaceCallout">Theme is also available from the button at the bottom left.</p>
+                        <label class="checkbox-row"><input type="checkbox" id="settingsCompactMessages" /> <span data-i18n="settings.compact">Compact messages</span></label>
+                        <div class="form-group-settings">
+                            <label for="fontScaleRange"><span data-i18n="settings.fontScale">Font scale</span> (<span id="fontScaleVal">100</span>%)</label>
                             <input type="range" id="fontScaleRange" min="85" max="130" value="100" />
                         </div>
                         <div class="form-group-settings">
-                            <label for="sidebarWidthRange">Ширина боковой колонки (<span id="sidebarWidthVal">260</span>px)</label>
+                            <label for="sidebarWidthRange"><span data-i18n="settings.sidebarWidth">Sidebar width</span> (<span id="sidebarWidthVal">260</span>px)</label>
                             <input type="range" id="sidebarWidthRange" min="220" max="360" value="260" />
                         </div>
-                        <label class="checkbox-row"><input type="checkbox" id="linksOpenNewTab" /> Ссылки в чатах открывать в новой вкладке</label>
-                        <h4>Горячие клавиши</h4>
+                        <label class="checkbox-row"><input type="checkbox" id="linksOpenNewTab" /> <span data-i18n="settings.linksNewTab">Open chat links in a new tab</span></label>
+                        <h4 data-i18n="settings.hotkeysH">Hotkeys</h4>
                         <ul class="hotkey-list">
-                            <li><kbd>Ctrl</kbd> + <kbd>K</kbd> — фокус поиска в чате</li>
-                            <li><kbd>Esc</kbd> — закрыть модальные окна</li>
+                            <li data-i18n="settings.hotkeySearchHtml" data-i18n-html><kbd>Ctrl</kbd> + <kbd>K</kbd> — focus search in chat</li>
+                            <li data-i18n="settings.hotkeyEscHtml" data-i18n-html><kbd>Esc</kbd> — close modals</li>
                         </ul>
                     </section>
                     <section class="settings-panel-page" data-panel="devices">
-                        <h3>Микрофон и наушники</h3>
-                        <p id="florMediaHttpsWarning" class="settings-hint" style="display:none;color:#b45309;" role="alert">
-                            Браузер не даёт микрофон и часть аудио по обычному <strong>http://</strong> с IP (кроме localhost).
-                            На своём сервере включите HTTPS: в <code>.env</code> задайте <code>USE_HTTPS=true</code> и при доступе по IP — <code>FLOR_TLS_SAN</code> с этим IP (см. <code>.env.example</code>), затем откройте <code>https://…</code>.
+                        <h3 data-i18n="settings.devicesH">Microphone &amp; headphones</h3>
+                        <p id="florMediaHttpsWarning" class="settings-hint" style="display:none;color:#b45309;" role="alert" data-i18n="settings.mediaWarn">
                         </p>
-                        <p class="settings-hint settings-callout">Выбор устройства применится при следующем подключении к звонку. Проверка микрофона — ниже.</p>
+                        <p class="settings-hint settings-callout" data-i18n="settings.devicesCallout">Device choice applies on the next call connection. Microphone test is below.</p>
                         <div class="form-group-settings">
-                            <label for="audioInputDevice">Микрофон</label>
+                            <label for="audioInputDevice" data-i18n="settings.mic">Microphone</label>
                             <select id="audioInputDevice"></select>
                         </div>
                         <div class="form-group-settings">
-                            <label for="audioOutputDevice">Вывод звука</label>
+                            <label for="audioOutputDevice" data-i18n="settings.output">Output</label>
                             <select id="audioOutputDevice"></select>
                         </div>
-                        <button type="button" class="settings-btn primary" id="refreshDevicesBtn">Обновить список устройств</button>
+                        <button type="button" class="settings-btn primary" id="refreshDevicesBtn" data-i18n="settings.refreshDevices">Refresh device list</button>
                         <div class="mic-test-wrap">
-                            <button type="button" class="settings-btn" id="micTestStartBtn">Проверить микрофон</button>
-                            <button type="button" class="settings-btn" id="micTestStopBtn" hidden>Остановить</button>
+                            <button type="button" class="settings-btn" id="micTestStartBtn" data-i18n="settings.micTest">Test microphone</button>
+                            <button type="button" class="settings-btn" id="micTestStopBtn" hidden data-i18n="settings.stop">Stop</button>
                             <div class="mic-meter" aria-hidden="true"><div class="mic-meter-fill" id="micMeterFill"></div></div>
                         </div>
-                        <h4>Голос в группе (только у вас)</h4>
-                        <p class="settings-hint">Во время группового звонка в списке участников нажмите иконку настроек у человека: громкость его голоса у вас в наушниках и пункт «Не слышать у себя». Сохраняется в этом браузере, другие не видят.</p>
-                        <button type="button" class="settings-btn settings-btn--secondary" id="resetVoiceParticipantPrefsBtn">Сбросить все настройки громкости участников</button>
+                        <h4 data-i18n="settings.voiceGroupH">Group voice (local)</h4>
+                        <p class="settings-hint" data-i18n="settings.voiceGroupHint">During a call, use per-participant options. Stored in this browser only.</p>
+                        <button type="button" class="settings-btn settings-btn--secondary" id="resetVoiceParticipantPrefsBtn" data-i18n="settings.resetVoicePrefs">Reset volume settings</button>
                     </section>
-                    <section class="settings-panel-page" data-panel="appearance">
-                        <h3>Оформление чата</h3>
-                        <p class="settings-hint settings-callout">Фон и размытие в области сообщений.</p>
+                    <section class="settings-panel-page" data-panel="ai">
+                        <h3 data-i18n="settings.aiH">AI in chats</h3>
+                        <p class="settings-hint settings-callout" data-i18n="settings.aiCallout">Summary and pre-send polish. Check privacy. Keys in localStorage if not in .env.</p>
                         <div class="form-group-settings">
-                            <label for="chatWallpaperPreset">Пресет фона</label>
-                            <select id="chatWallpaperPreset">
-                                <option value="">Без фона</option>
-                                <option value="purple">Фиолетовый градиент</option>
-                                <option value="night">Ночной градиент</option>
-                                <option value="mint">Мятный</option>
+                            <label for="florAiProvider" data-i18n="settings.aiProvider">Provider</label>
+                            <select id="florAiProvider">
+                                <option value="" data-i18n="settings.aiOff">Off</option>
+                                <option value="openai">OpenAI (or compatible in .env)</option>
+                                <option value="gemini">Google Gemini</option>
                             </select>
                         </div>
                         <div class="form-group-settings">
-                            <label for="chatWallpaperUrl">Свой URL картинки (опционально)</label>
+                            <label for="florAiApiKey" data-i18n="settings.aiKey">API key</label>
+                            <input type="password" id="florAiApiKey" maxlength="512" autocomplete="off" placeholder="sk-…" />
+                        </div>
+                        <div class="form-group-settings">
+                            <label for="florAiModel" data-i18n="settings.aiModel">Model</label>
+                            <input type="text" id="florAiModel" maxlength="120" autocomplete="off" />
+                        </div>
+                        <label class="checkbox-row"><input type="checkbox" id="florAiAssistBar" /> <span data-i18n="settings.aiAssist">AI assist bar</span></label>
+                    </section>
+                    <section class="settings-panel-page" data-panel="appearance">
+                        <h3 data-i18n="settings.appearanceH">Chat appearance</h3>
+                        <p class="settings-hint settings-callout" data-i18n="settings.appearanceCallout">Background and blur in the message area.</p>
+                        <div class="form-group-settings">
+                            <label for="chatWallpaperPreset" data-i18n="settings.preset">Background preset</label>
+                            <select id="chatWallpaperPreset">
+                                <option value="" data-i18n="chat.wallpaperNone">No wallpaper</option>
+                                <option value="purple" data-i18n="chat.wallpaperPurple">Purple</option>
+                                <option value="night" data-i18n="chat.wallpaperNight">Night</option>
+                                <option value="mint" data-i18n="chat.wallpaperMint">Mint</option>
+                            </select>
+                        </div>
+                        <div class="form-group-settings">
+                            <label for="chatWallpaperUrl" data-i18n="settings.customUrl">Custom image URL</label>
                             <input type="url" id="chatWallpaperUrl" placeholder="https://…" />
                         </div>
                         <div class="form-group-settings">
-                            <label for="chatWallpaperBlur">Размытие фона (<span id="chatBlurVal">0</span>px)</label>
+                            <label for="chatWallpaperBlur"><span data-i18n="settings.blur">Background blur</span> (<span id="chatBlurVal">0</span>px)</label>
                             <input type="range" id="chatWallpaperBlur" min="0" max="24" value="0" />
                         </div>
                     </section>
@@ -601,17 +891,95 @@
             </div>
             <div class="settings-hub-footer">
                 <div class="settings-footer-legal">
-                    <a href="privacy.html" target="_blank" rel="noopener noreferrer">Конфиденциальность</a>
+                    <a href="privacy.html" target="_blank" rel="noopener noreferrer" data-i18n="settings.legalPrivacy">Privacy</a>
                     <span aria-hidden="true">·</span>
-                    <a href="terms.html" target="_blank" rel="noopener noreferrer">Условия</a>
+                    <a href="terms.html" target="_blank" rel="noopener noreferrer" data-i18n="settings.legalTerms">Terms</a>
                 </div>
-                <p class="settings-security-note settings-security-note--short">Не передавайте пароли и платёжные данные в чатах. Для максимальной приватности используйте известные вам сервисы с сквозным шифрованием.</p>
-                <button type="button" class="settings-btn primary" id="settingsSaveBtn">Сохранить</button>
-                <button type="button" class="settings-btn danger" id="settingsLogoutBtn">Выйти</button>
+                <p class="settings-security-note settings-security-note--short" data-i18n="settings.securityFooter">Do not share passwords in chat.</p>
+                <button type="button" class="settings-btn primary" id="settingsSaveBtn" data-i18n="settings.saveBtn">Save</button>
+                <button type="button" class="settings-btn danger" id="settingsLogoutBtn" data-i18n="nav.logout">Log out</button>
             </div>
         </div>
     </div>
 
+    <div id="reportOverlay" class="settings-overlay hidden" aria-hidden="true">
+        <div class="settings-panel flor-report-panel" role="dialog" aria-modal="true" aria-labelledby="reportTitle">
+            <button type="button" class="user-profile-close" id="reportCloseBtn" aria-label="Закрыть"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
+            <div class="flor-report-panel__icon" aria-hidden="true">!</div>
+            <h2 id="reportTitle">Пожаловаться</h2>
+            <p class="settings-hint flor-report-panel__lead" id="reportLead">Опишите причину жалобы. Администраторы проверят обращение.</p>
+            <div class="form-group-settings">
+                <label for="reportReasonSelect">Категория</label>
+                <select id="reportReasonSelect"></select>
+            </div>
+            <div class="form-group-settings hidden" id="reportReasonCustomWrap">
+                <label for="reportReasonCustomInput">Своя причина</label>
+                <input type="text" id="reportReasonCustomInput" maxlength="120" placeholder="Введите причину жалобы" />
+            </div>
+            <div class="form-group-settings">
+                <label for="reportDetailsInput">Комментарий (опционально)</label>
+                <textarea id="reportDetailsInput" rows="3" maxlength="900" placeholder="Добавьте детали, чтобы быстрее рассмотреть жалобу"></textarea>
+            </div>
+            <div class="settings-actions settings-actions--row flor-report-actions">
+                <button type="button" class="settings-btn" id="reportCancelBtn">Отмена</button>
+                <button type="button" class="settings-btn primary" id="reportSubmitBtn">Отправить жалобу</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="serverReportsOverlay" class="settings-overlay hidden" aria-hidden="true">
+        <div class="settings-panel flor-server-reports-panel" role="dialog" aria-modal="true" aria-labelledby="serverReportsTitle">
+            <button type="button" class="user-profile-close" id="serverReportsCloseBtn" aria-label="Закрыть"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
+            <h2 id="serverReportsTitle">Жалобы группы</h2>
+            <p class="settings-hint flor-server-reports-panel__lead">Открытые жалобы отображаются ниже. Выберите жалобу и закройте ее после проверки.</p>
+            <div id="serverReportsEmpty" class="flor-server-reports-empty hidden">Открытых жалоб нет.</div>
+            <div id="serverReportsList" class="flor-server-reports-list flor-scroll"></div>
+            <div class="settings-actions settings-actions--row flor-server-reports-actions">
+                <button type="button" class="settings-btn" id="serverReportsRefreshBtn">Обновить</button>
+                <button type="button" class="settings-btn" id="serverReportsCancelBtn">Закрыть</button>
+                <button type="button" class="settings-btn primary" id="serverReportsResolveBtn">Закрыть жалобу</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="imageViewerOverlay" class="flor-image-viewer-overlay hidden" aria-hidden="true">
+        <div class="flor-image-viewer-backdrop" id="imageViewerBackdrop"></div>
+        <div class="flor-image-viewer-sheet" role="dialog" aria-modal="true" aria-label="Просмотр изображения">
+            <button type="button" class="flor-image-viewer-close" id="imageViewerCloseBtn" aria-label="Закрыть"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
+            <img id="imageViewerImg" class="flor-image-viewer-img" alt="" />
+        </div>
+    </div>
+
+    <div id="florSettingsQrScanOverlay" class="settings-overlay hidden" aria-hidden="true">
+        <div class="settings-panel flor-settings-qr-panel" role="dialog" aria-modal="true" aria-labelledby="florSettingsQrScanTitle">
+            <button type="button" class="user-profile-close" id="florSettingsQrScanCloseBtn" data-i18n-aria="common.close" aria-label="Close">
+                <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+            <h2 id="florSettingsQrScanTitle" data-i18n="settings.qrScanTitle">Approve sign-in on another device</h2>
+            <p class="settings-hint" id="florSettingsQrScanIntro" data-i18n="settings.qrScanIntro">Point the camera at the QR code on your computer screen.</p>
+            <div class="flor-settings-qr-video-wrap">
+                <video id="florSettingsQrVideo" class="flor-settings-qr-video" playsinline muted autoplay></video>
+            </div>
+            <p class="flor-settings-qr-status" id="florSettingsQrScanStatus" role="status" aria-live="polite"></p>
+            <div class="settings-actions">
+                <button type="button" class="settings-btn settings-btn--secondary" id="florSettingsQrScanDoneBtn" data-i18n="auth.qrScanClose">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="confirmOverlay" class="settings-overlay hidden" aria-hidden="true">
+        <div class="settings-panel flor-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+            <button type="button" class="user-profile-close" id="confirmCloseBtn" aria-label="Закрыть"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
+            <h2 id="confirmTitle">Подтверждение</h2>
+            <p class="settings-hint flor-confirm-panel__text" id="confirmText">Подтвердите действие.</p>
+            <div class="settings-actions settings-actions--row flor-confirm-panel__actions">
+                <button type="button" class="settings-btn" id="confirmCancelBtn">Отмена</button>
+                <button type="button" class="settings-btn danger" id="confirmOkBtn">Удалить</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js" crossorigin="anonymous"></script>
     <script src="script.js"></script>
 </body>
 </html>

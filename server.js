@@ -7,9 +7,12 @@ const path = require('path');
 const pkg = require('./package.json');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const multer = require('multer');
 const cors = require('cors');
 const fs = require('fs');
+const nodemailer = require('nodemailer');
+const QRCode = require('qrcode');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
@@ -19,9 +22,17 @@ const {
     ensureChannelSchema,
     ensureE2eeSchema,
     ensureUserProfileSchema,
+    ensureUserSecuritySchema,
+    ensureServerInviteSchema,
     ensureDmReactionsSchema,
+    ensureMessageReplyAndPinsSchema,
+    ensureStickerPackSchema,
+    FLOR_MAX_STICKER_PACKS_PER_USER,
+    FLOR_MAX_STICKERS_PER_PACK,
     migrateChannelHierarchy,
     getChannelTree,
+    FLOR_MAX_CHANNEL_PINS,
+    FLOR_MAX_DM_PINS,
     userDB,
     messageDB,
     channelDB,
@@ -31,8 +42,13 @@ const {
     fileDB,
     reactionDB,
     dmReactionDB,
+    pinDB,
     friendDB,
-    serverDB
+    serverDB,
+    serverBanDB,
+    moderationReportDB,
+    serverInviteDB,
+    stickerPackDB
 } = require('./database');
 
 /**
@@ -98,6 +114,14 @@ function createHttpServer(app) {
     return { server: http.createServer(app), useHttps: false };
 }
 
+function florOriginFromReq(req) {
+    const hdr = String((req && req.headers && req.headers.origin) || '').trim();
+    if (/^https?:\/\//i.test(hdr)) return hdr.replace(/\/$/, '');
+    const proto = req && req.protocol === 'https' ? 'https' : useHttps ? 'https' : 'http';
+    const host = String((req && req.get && req.get('host')) || `127.0.0.1:${PORT}`).trim();
+    return `${proto}://${host}`.replace(/\/$/, '');
+}
+
 const app = express();
 const { server, useHttps } = createHttpServer(app);
 const corsOrigin = process.env.CORS_ORIGIN || true;
@@ -132,6 +156,139 @@ if (
 const MAX_MESSAGE_LENGTH = 4000;
 /** Зашифрованные JSON-пакеты (AES-GCM) могут быть длиннее */
 const MAX_E2EE_MESSAGE_LENGTH = 98304;
+const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
+const EMAIL_CODE_RESEND_MS = 60 * 1000;
+const pendingEmailCodes = new Map();
+const QR_SESSION_TTL_MS = 3 * 60 * 1000;
+const pendingQrSessions = new Map();
+setInterval(() => {
+    const now = Date.now();
+    for (const [k, entry] of pendingEmailCodes.entries()) {
+        if (!entry || now > entry.expiresAt) {
+            pendingEmailCodes.delete(k);
+        }
+    }
+}, 60 * 1000);
+setInterval(() => {
+    const now = Date.now();
+    for (const [sid, entry] of pendingQrSessions.entries()) {
+        if (!entry || now > entry.expiresAt) {
+            pendingQrSessions.delete(sid);
+        }
+    }
+}, 30 * 1000);
+
+function createEmailCode() {
+    return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function emailCodeKey(email, purpose) {
+    return `${String(purpose || '').trim().toLowerCase()}:${String(email || '').trim().toLowerCase()}`;
+}
+
+function hashEmailCode(code) {
+    return crypto.createHash('sha256').update(String(code || '')).digest('hex');
+}
+
+function getMailTransporter() {
+    const host = String(process.env.SMTP_HOST || '').trim();
+    const port = parseInt(process.env.SMTP_PORT || '587', 10);
+    const user = String(process.env.SMTP_USER || '').trim();
+    const pass = String(process.env.SMTP_PASS || '').trim();
+    if (!host || !Number.isFinite(port) || !user || !pass) {
+        return null;
+    }
+    return nodemailer.createTransport({
+        host,
+        port,
+        secure: port === 465,
+        auth: { user, pass }
+    });
+}
+
+async function sendVerificationCodeEmail(email, code) {
+    const transporter = getMailTransporter();
+    if (!transporter) {
+        throw new Error('EMAIL_TRANSPORT_NOT_CONFIGURED');
+    }
+    const from = String(process.env.SMTP_FROM || process.env.SMTP_USER || '').trim();
+    const appName = String(process.env.APP_NAME || 'FLOR MESSENGER').trim();
+    const html = `
+        <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111">
+            <h2 style="margin:0 0 12px">${appName}</h2>
+            <p style="margin:0 0 10px">Код подтверждения:</p>
+            <p style="margin:0 0 16px;font-size:28px;font-weight:700;letter-spacing:4px">${code}</p>
+            <p style="margin:0;color:#555">Код действует 10 минут. Если это были не вы — просто проигнорируйте письмо.</p>
+        </div>
+    `;
+    await transporter.sendMail({
+        from,
+        to: email,
+        subject: `${appName}: код подтверждения`,
+        text: `Код подтверждения: ${code}. Код действует 10 минут.`,
+        html
+    });
+}
+
+async function sendLoginAlertEmail(email, username, ipAddr) {
+    const transporter = getMailTransporter();
+    if (!transporter) return;
+    const from = String(process.env.SMTP_FROM || process.env.SMTP_USER || '').trim();
+    const appName = String(process.env.APP_NAME || 'FLOR MESSENGER').trim();
+    const when = new Date().toLocaleString('ru-RU');
+    await transporter.sendMail({
+        from,
+        to: email,
+        subject: `${appName}: вход в аккаунт`,
+        text: `Новый вход в аккаунт ${username || ''}\nВремя: ${when}\nIP: ${ipAddr || 'unknown'}`,
+        html: `
+            <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111">
+                <h2 style="margin:0 0 12px">${appName}</h2>
+                <p style="margin:0 0 8px">Выполнен вход в аккаунт <strong>${username || ''}</strong>.</p>
+                <p style="margin:0 0 4px">Время: ${when}</p>
+                <p style="margin:0 0 12px">IP: ${ipAddr || 'unknown'}</p>
+                <p style="margin:0;color:#555">Если это были не вы — срочно смените пароль.</p>
+            </div>
+        `
+    });
+}
+
+function verifyStoredEmailCode(email, purpose, code) {
+    const key = emailCodeKey(email, purpose);
+    const stored = pendingEmailCodes.get(key);
+    if (!stored || Date.now() > stored.expiresAt) {
+        pendingEmailCodes.delete(key);
+        return { ok: false, error: 'Email verification code expired' };
+    }
+    if (stored.codeHash !== hashEmailCode(code)) {
+        return { ok: false, error: 'Invalid email verification code' };
+    }
+    pendingEmailCodes.delete(key);
+    return { ok: true };
+}
+
+function createQrSession() {
+    const id = crypto.randomBytes(18).toString('base64url');
+    const session = {
+        id,
+        status: 'pending',
+        createdAt: Date.now(),
+        expiresAt: Date.now() + QR_SESSION_TTL_MS,
+        token: null,
+        user: null
+    };
+    pendingQrSessions.set(id, session);
+    return session;
+}
+
+function sanitizeUserForClient(user) {
+    return {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        avatar: user.avatar || user.username.charAt(0).toUpperCase()
+    };
+}
 
 function sanitizeMessageText(text) {
     if (typeof text !== 'string') return '';
@@ -185,6 +342,54 @@ function normalizeMessageTextInput(raw) {
         return { ok: false, error: 'Пустое сообщение' };
     }
     return { ok: true, text: plain, e2ee: false };
+}
+
+function florAvatarFromRow(u) {
+    if (!u) return '?';
+    if (u.avatar && String(u.avatar).trim()) return u.avatar;
+    const name = u.username || '';
+    return name ? String(name).charAt(0).toUpperCase() : '?';
+}
+
+function florChannelRowToBroadcastMessage(row) {
+    if (!row) return null;
+    const payload = {
+        id: row.id,
+        senderId: row.user_id,
+        author: row.username,
+        avatar: florAvatarFromRow(row),
+        text: row.content,
+        timestamp: row.created_at
+    };
+    if (row.reply_to_id) {
+        payload.replyTo = {
+            id: row.reply_to_id,
+            author: row.reply_to_username || '',
+            text: row.reply_to_content != null ? row.reply_to_content : ''
+        };
+    }
+    return payload;
+}
+
+function florDmRowToSocketPayload(row) {
+    if (!row) return null;
+    const payload = {
+        id: row.id,
+        senderId: row.sender_id,
+        author: row.username,
+        avatar: florAvatarFromRow(row),
+        text: row.content,
+        timestamp: row.created_at,
+        read: row.read
+    };
+    if (row.reply_to_id) {
+        payload.replyTo = {
+            id: row.reply_to_id,
+            author: row.reply_to_username || '',
+            text: row.reply_to_content != null ? row.reply_to_content : ''
+        };
+    }
+    return payload;
 }
 
 /** Собирает плоский список JWK из массива / вложенных массивов / JSON-строк элементов */
@@ -304,6 +509,15 @@ async function assertServerMember(userId, serverId) {
     return serverDB.isMember(sid, userId);
 }
 
+async function assertServerOwner(userId, serverId) {
+    const sid = parseInt(serverId, 10);
+    if (Number.isNaN(sid)) return null;
+    const srv = await serverDB.getById(sid);
+    if (!srv) return null;
+    if (Number(srv.owner_id) !== Number(userId)) return null;
+    return srv;
+}
+
 // Middleware
 app.use(helmet({ contentSecurityPolicy: false }));
 if (process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true') {
@@ -332,6 +546,122 @@ const apiLimiter = rateLimit({
     legacyHeaders: false
 });
 
+/** Лимит запросов к ИИ на пользователя (JWT), чтобы не сжигать квоты и CPU */
+const aiUserLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 24,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => String(req.user && req.user.id != null ? req.user.id : req.ip || '0'),
+    message: { error: 'Слишком много запросов к ИИ. Подождите минуту.' }
+});
+
+function sanitizeAiMessages(raw) {
+    if (!Array.isArray(raw)) return null;
+    const out = [];
+    let total = 0;
+    for (const m of raw.slice(0, 48)) {
+        if (!m || typeof m !== 'object') continue;
+        let role = String(m.role || 'user').toLowerCase();
+        if (!['system', 'user', 'assistant'].includes(role)) role = 'user';
+        let content = String(m.content == null ? '' : m.content);
+        if (content.length > 32000) content = content.slice(0, 32000) + '…';
+        total += content.length;
+        if (total > 220000) break;
+        out.push({ role, content });
+    }
+    return out.length ? out : null;
+}
+
+async function florProxyOpenAIChat({ baseUrl, apiKey, model, messages, maxTokens }) {
+    const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+    const r = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+            model: model || 'gpt-4o-mini',
+            messages,
+            max_tokens: maxTokens
+        })
+    });
+    const text = await r.text();
+    let data;
+    try {
+        data = JSON.parse(text);
+    } catch {
+        data = {};
+    }
+    if (!r.ok) {
+        const err =
+            (data.error && (data.error.message || data.error)) || text.slice(0, 280) || `HTTP ${r.status}`;
+        throw new Error(String(err));
+    }
+    const out =
+        data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    if (typeof out !== 'string' || !out.trim()) throw new Error('Пустой ответ модели');
+    return out.trim();
+}
+
+async function florProxyGeminiGenerate({ apiKey, model, messages, maxTokens }) {
+    const m = model || 'gemini-1.5-flash';
+    let systemText = '';
+    const conversation = [];
+    for (const msg of messages) {
+        if (msg.role === 'system') {
+            systemText += (systemText ? '\n\n' : '') + msg.content;
+            continue;
+        }
+        const role = msg.role === 'assistant' ? 'model' : 'user';
+        conversation.push({ role, parts: [{ text: msg.content }] });
+    }
+    if (!conversation.length) {
+        conversation.push({
+            role: 'user',
+            parts: [{ text: systemText ? `${systemText}\n\n(выполни инструкции выше)` : 'Ответь кратко.' }]
+        });
+        systemText = '';
+    }
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+        m
+    )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const body = {
+        contents: conversation,
+        generationConfig: {
+            maxOutputTokens: maxTokens,
+            temperature: 0.45
+        }
+    };
+    if (systemText) {
+        body.systemInstruction = { parts: [{ text: systemText }] };
+    }
+    const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+    const text = await r.text();
+    let data;
+    try {
+        data = JSON.parse(text);
+    } catch {
+        data = {};
+    }
+    if (!r.ok) {
+        const err =
+            (data.error && (data.error.message || data.error.status)) || text.slice(0, 280) || `HTTP ${r.status}`;
+        throw new Error(String(err));
+    }
+    const parts =
+        data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
+    if (!parts || !parts.length) throw new Error('Пустой ответ Gemini');
+    const out = parts.map((p) => p.text || '').join('');
+    if (!out.trim()) throw new Error('Пустой ответ модели');
+    return out.trim();
+}
+
 app.get('/health', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ ok: true, name: pkg.name, version: pkg.version });
@@ -343,6 +673,137 @@ app.get('/api/health', (req, res) => {
 });
 
 app.use('/api/', apiLimiter);
+
+/** Поиск GIF (Giphy). Без GIPHY_API_KEY — встроенный демо-набор. */
+function florGiphyImgUrl(obj) {
+    if (!obj || typeof obj !== 'object') {
+        return '';
+    }
+    const u = obj.url;
+    return typeof u === 'string' && u ? u : '';
+}
+
+function florGiphyPickGifUrl(im) {
+    if (!im) return '';
+    const tryKeys = [
+        'downsized_medium',
+        'downsized',
+        'downsized_small',
+        'original',
+        'fixed_width',
+        'fixed_height',
+        'fixed_width_downsampled',
+        'fixed_height_downsampled',
+        'downsized_large',
+        'hd',
+        'fixed_width_small',
+        'fixed_height_small',
+        'preview',
+        'preview_gif'
+    ];
+    for (const k of tryKeys) {
+        const s = florGiphyImgUrl(im[k]);
+        if (s) return s;
+    }
+    return '';
+}
+
+function florGiphyPickPreviewUrl(im, fallbackUrl) {
+    if (!im) return fallbackUrl;
+    const tryKeys = [
+        'fixed_height_small',
+        'fixed_width_small',
+        'preview_gif',
+        'downsized_still',
+        'fixed_height_still',
+        'downsized',
+        'downsized_small',
+        'downsized_medium'
+    ];
+    for (const k of tryKeys) {
+        const s = florGiphyImgUrl(im[k]);
+        if (s) return s;
+    }
+    return fallbackUrl;
+}
+
+function florGiphyMapResults(data) {
+    const list = data && data.data;
+    if (!Array.isArray(list)) return [];
+    return list
+        .map((d) => {
+            const im = d.images || {};
+            const url = florGiphyPickGifUrl(im);
+            const preview = florGiphyPickPreviewUrl(im, url);
+            return { url, preview, title: (d.title && String(d.title).trim()) || '' };
+        })
+        .filter((x) => x.url);
+}
+
+const FLOR_GIF_FALLBACK = [
+    { url: 'https://i.giphy.com/3o7abKhOpu0NwenH3O/giphy.gif', preview: 'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/200w.gif' },
+    { url: 'https://i.giphy.com/26u4cqiYI30juCOGY/giphy.gif', preview: 'https://media.giphy.com/media/26u4cqiYI30juCOGY/200w.gif' },
+    { url: 'https://i.giphy.com/l0MYC0LajboPxCSSY/giphy.gif', preview: 'https://media.giphy.com/media/l0MYC0LajboPxCSSY/200w.gif' },
+    { url: 'https://i.giphy.com/xT5LMHxhOfscxPfIfm/giphy.gif', preview: 'https://media.giphy.com/media/xT5LMHxhOfscxPfIfm/200w.gif' },
+    { url: 'https://i.giphy.com/3ohzdIuqgS4LZ7Av7y/giphy.gif', preview: 'https://media.giphy.com/media/3ohzdIuqgS4LZ7Av7y/200w.gif' },
+    { url: 'https://i.giphy.com/3o6ZtpxWZbqty0A6w8/giphy.gif', preview: 'https://media.giphy.com/media/3o6ZtpxWZbqty0A6w8/200w.gif' },
+    { url: 'https://i.giphy.com/d3mlmmM5NRTY1aG0/giphy.gif', preview: 'https://media.giphy.com/media/d3mlmmM5NRTY1aG0/200w.gif' },
+    { url: 'https://i.giphy.com/26BRvoyThfJ6qn6wGJ/giphy.gif', preview: 'https://media.giphy.com/media/26BRvoyThfJ6qn6wGJ/200w.gif' },
+    { url: 'https://i.giphy.com/3o6gDWuZfxojYfYg7S/giphy.gif', preview: 'https://media.giphy.com/media/3o6gDWuZfxojYfYg7S/200w.gif' },
+    { url: 'https://i.giphy.com/l3V0j3ytFyGHqiV3W/giphy.gif', preview: 'https://media.giphy.com/media/l3V0j3ytFyGHqiV3W/200w.gif' },
+    { url: 'https://i.giphy.com/5GoVLqeAOo6PK/giphy.gif', preview: 'https://media.giphy.com/media/5GoVLqeAOo6PK/200w.gif' },
+    { url: 'https://i.giphy.com/3oz8xZdA5iJqVbN8mQ/giphy.gif', preview: 'https://media.giphy.com/media/3oz8xZdA5iJqVbN8mQ/200w.gif' },
+    { url: 'https://i.giphy.com/3o6ZtaO9BZHcOJ3zoQ/giphy.gif', preview: 'https://media.giphy.com/media/3o6ZtaO9BZHcOJ3zoQ/200w.gif' },
+    { url: 'https://i.giphy.com/2xPMZqKZrOQeI/giphy.gif', preview: 'https://media.giphy.com/media/2xPMZqKZrOQeI/200w.gif' },
+    { url: 'https://i.giphy.com/3ohzdRmVbTjN9YjR8e/giphy.gif', preview: 'https://media.giphy.com/media/3ohzdRmVbTjN9YjR8e/200w.gif' },
+    { url: 'https://i.giphy.com/3o6ZtpXBXBMBnQjS9e/giphy.gif', preview: 'https://media.giphy.com/media/3o6ZtpXBXBMBnQjS9e/200w.gif' },
+    { url: 'https://i.giphy.com/l3V0A9kQ0h7dH9iEe/giphy.gif', preview: 'https://media.giphy.com/media/l3V0A9kQ0h7dH9iEe/200w.gif' },
+    { url: 'https://i.giphy.com/3o7TKSjRrfIPjei7Wo/giphy.gif', preview: 'https://media.giphy.com/media/3o7TKSjRrfIPjei7Wo/200w.gif' },
+    { url: 'https://i.giphy.com/3o6ZtehQhVj0kN6C7a/giphy.gif', preview: 'https://media.giphy.com/media/3o6ZtehQhVj0kN6C7a/200w.gif' },
+    { url: 'https://i.giphy.com/14udF3QJq1nV0k/giphy.gif', preview: 'https://media.giphy.com/media/14udF3QJq1nV0k/200w.gif' }
+];
+
+function florGifFallbackRotate(q) {
+    const n = FLOR_GIF_FALLBACK.length;
+    let h = 0;
+    const s = String(q || 'x');
+    for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) | 0;
+    const off = (Math.abs(h) % n) + n;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+        out.push(FLOR_GIF_FALLBACK[(off + i) % n]);
+    }
+    return out;
+}
+
+app.get('/api/gifs/search', async (req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=90');
+    const q = String(req.query.q || 'fun')
+        .trim()
+        .slice(0, 80) || 'fun';
+    const limit = Math.min(32, Math.max(6, parseInt(String(req.query.limit || '20'), 10) || 20));
+    const key = process.env.GIPHY_API_KEY;
+    if (key) {
+        try {
+            const cyr = /[\u0400-\u04FF]/.test(q);
+            const u =
+                `https://api.giphy.com/v1/gifs/search?api_key=${encodeURIComponent(
+                    key
+                )}&q=${encodeURIComponent(q)}&limit=${limit}` + (cyr ? '&lang=ru' : '');
+            const r = await fetch(u, { headers: { Accept: 'application/json' } });
+            if (r.ok) {
+                const j = await r.json();
+                const results = florGiphyMapResults(j);
+                if (results.length) {
+                    return res.json({ source: 'giphy', q, results: results.slice(0, limit) });
+                }
+            }
+        } catch (e) {
+            console.error('GET /api/gifs/search:', e && e.message);
+        }
+    }
+    return res.json({ source: 'fallback', q, results: florGifFallbackRotate(q).slice(0, limit) });
+});
 
 // Create uploads directory
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -357,18 +818,41 @@ function multerFilenameFromMime(originalname, mimetype) {
         .toLowerCase()
         .split(';')[0]
         .trim();
-    const origExt = path.extname(originalname || '').toLowerCase();
+    const safeBase = path.basename(String(originalname || ''));
+    let origExt = path.extname(safeBase).toLowerCase();
+    if (/\.tar\.gz$/i.test(safeBase)) origExt = '.tar.gz';
+    else if (/\.tar\.bz2$/i.test(safeBase)) origExt = '.tar.bz2';
     const mimeToExt = {
         'image/jpeg': '.jpg',
         'image/jpg': '.jpg',
+        'image/pjpeg': '.jpg',
         'image/png': '.png',
         'image/gif': '.gif',
         'image/webp': '.webp',
+        'image/avif': '.avif',
+        'image/bmp': '.bmp',
+        'image/x-ms-bmp': '.bmp',
+        'image/tiff': '.tiff',
+        'image/heic': '.heic',
+        'image/heif': '.heif',
         'image/svg+xml': '.svg',
         'application/pdf': '.pdf',
         'application/msword': '.doc',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+        'application/vnd.ms-powerpoint': '.ppt',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+        'application/vnd.oasis.opendocument.text': '.odt',
+        'application/vnd.oasis.opendocument.spreadsheet': '.ods',
+        'application/vnd.oasis.opendocument.presentation': '.odp',
         'text/plain': '.txt',
+        'text/markdown': '.md',
+        'text/x-markdown': '.md',
+        'application/json': '.json',
+        'text/json': '.json',
+        'application/rtf': '.rtf',
+        'text/rtf': '.rtf',
+        'application/xml': '.xml',
+        'text/xml': '.xml',
         'audio/mpeg': '.mp3',
         'audio/mp3': '.mp3',
         'audio/webm': '.webm',
@@ -379,14 +863,34 @@ function multerFilenameFromMime(originalname, mimetype) {
         'audio/mp4': '.m4a',
         'audio/x-m4a': '.m4a',
         'audio/aac': '.aac',
+        'audio/flac': '.flac',
+        'audio/x-flac': '.flac',
         'video/mp4': '.mp4',
         'video/webm': '.webm',
         'video/quicktime': '.mov',
+        'video/x-msvideo': '.avi',
+        'video/avi': '.avi',
+        'video/mpeg': '.mpeg',
+        'video/ogg': '.ogg',
         'application/zip': '.zip',
-        'application/x-rar-compressed': '.rar'
+        'application/x-zip-compressed': '.zip',
+        'application/x-rar-compressed': '.rar',
+        'application/x-7z-compressed': '.7z',
+        'application/gzip': '.gz',
+        'application/x-gtar': '.tar',
+        'application/x-tar': '.tar',
+        'text/html': '.html',
+        'application/xhtml+xml': '.xhtml',
+        'application/x-pdf': '.pdf',
+        'text/csv': '.csv',
+        'application/vnd.ms-excel': '.xls',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx'
     };
     let ext = mimeToExt[mime];
-    if (!ext && origExt && /^\.[a-z0-9]{1,10}$/i.test(origExt)) {
+    if (!ext && origExt && /^(\.[a-z0-9]{1,10}|\.tar\.gz|\.tar\.bz2)$/i.test(origExt)) {
+        ext = origExt;
+    }
+    if (!ext && origExt && /^\.[a-z0-9]+\.[a-z0-9]+$/i.test(origExt)) {
         ext = origExt;
     }
     if (!ext) ext = '.bin';
@@ -408,11 +912,51 @@ const upload = multer({
     storage: storage,
     limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
     fileFilter: (req, file, cb) => {
-        // Allow all common file types
+        const rawMime = String(file.mimetype || '')
+            .toLowerCase()
+            .split(';')[0]
+            .trim();
+
         const allowedMimeTypes = [
-            'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
-            'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'image/jpeg',
+            'image/jpg',
+            'image/pjpeg',
+            'image/png',
+            'image/gif',
+            'image/webp',
+            'image/avif',
+            'image/bmp',
+            'image/x-ms-bmp',
+            'image/tiff',
+            'image/x-icon',
+            'image/vnd.microsoft.icon',
+            'image/heic',
+            'image/heif',
+            'image/svg+xml',
+            'application/pdf',
+            'application/x-pdf',
+            'application/acrobat',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'application/vnd.ms-excel',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.ms-powerpoint',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'application/vnd.oasis.opendocument.text',
+            'application/vnd.oasis.opendocument.spreadsheet',
+            'application/vnd.oasis.opendocument.presentation',
             'text/plain',
+            'text/html',
+            'application/xhtml+xml',
+            'text/csv',
+            'text/markdown',
+            'text/x-markdown',
+            'application/json',
+            'text/json',
+            'application/rtf',
+            'text/rtf',
+            'application/xml',
+            'text/xml',
             'audio/mpeg',
             'audio/mp3',
             'audio/webm',
@@ -423,46 +967,123 @@ const upload = multer({
             'audio/mp4',
             'audio/x-m4a',
             'audio/aac',
+            'audio/flac',
+            'audio/x-flac',
             'video/mp4',
             'video/webm',
             'video/quicktime',
+            'video/x-msvideo',
+            'video/avi',
+            'video/mpeg',
+            'video/ogg',
             'application/zip',
-            'application/x-rar-compressed'
+            'application/x-zip-compressed',
+            'application/x-rar-compressed',
+            'application/x-7z-compressed',
+            'application/gzip',
+            'application/x-gtar',
+            'application/x-tar'
         ];
 
         const allowedExtensions = [
             '.jpg',
             '.jpeg',
+            '.jfif',
+            '.pjpeg',
             '.png',
             '.gif',
             '.webp',
+            '.avif',
+            '.bmp',
+            '.tif',
+            '.tiff',
+            '.ico',
+            '.heic',
+            '.heif',
             '.svg',
             '.pdf',
+            '.html',
+            '.htm',
+            '.xhtml',
             '.doc',
             '.docx',
             '.txt',
+            '.csv',
+            '.xls',
+            '.xlsx',
+            '.ppt',
+            '.pptx',
+            '.odt',
+            '.ods',
+            '.odp',
+            '.md',
+            '.markdown',
+            '.json',
+            '.xml',
+            '.rtf',
+            '.log',
+            '.yml',
+            '.yaml',
             '.mp3',
             '.mp4',
             '.webm',
             '.mov',
+            '.avi',
+            '.mkv',
+            '.mpeg',
+            '.mpg',
+            '.wmv',
             '.zip',
             '.rar',
+            '.7z',
+            '.tar',
+            '.gz',
+            '.tgz',
             '.ogg',
             '.opus',
             '.wav',
             '.m4a',
-            '.aac'
+            '.aac',
+            '.flac'
         ];
-        
-        const ext = path.extname(file.originalname).toLowerCase();
-        
-        if (allowedMimeTypes.includes(file.mimetype) || allowedExtensions.includes(ext)) {
+
+        const safeBase = path.basename(String(file.originalname || ''));
+        let ext = path.extname(safeBase).toLowerCase();
+        /* .tar.gz, .tar.bz2 */
+        if (/\.tar\.gz$/i.test(safeBase)) ext = '.tar.gz';
+        else if (/\.tar\.bz2$/i.test(safeBase)) ext = '.tar.bz2';
+
+        const allowedCompoundExt = ['.tar.gz', '.tar.bz2'];
+
+        if (
+            allowedMimeTypes.includes(rawMime) ||
+            allowedExtensions.includes(ext) ||
+            allowedCompoundExt.includes(ext)
+        ) {
             cb(null, true);
         } else {
             cb(new Error('Тип файла не разрешён'), false);
         }
     }
 });
+
+/** Multer отдаёт ошибки фильтра/размера в колбэк — иначе клиент видит пустой ответ */
+function uploadSingleMiddleware(fieldName) {
+    return (req, res, next) => {
+        upload.single(fieldName)(req, res, (err) => {
+            if (!err) {
+                return next();
+            }
+            if (err instanceof multer.MulterError) {
+                if (err.code === 'LIMIT_FILE_SIZE') {
+                    return res.status(400).json({ error: 'Файл не больше 10 МБ' });
+                }
+                return res.status(400).json({ error: err.message || 'Ошибка загрузки' });
+            }
+            return res.status(400).json({ error: err.message || 'Ошибка загрузки' });
+        });
+    };
+}
 
 const profileImageUpload = multer({
     storage,
@@ -475,6 +1096,46 @@ const profileImageUpload = multer({
         }
     }
 });
+
+const stickerPackImageUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => {
+            const d = path.join(uploadsDir, 'stickers');
+            if (!fs.existsSync(d)) {
+                fs.mkdirSync(d, { recursive: true });
+            }
+            cb(null, d);
+        },
+        filename: (req, file, cb) => {
+            cb(null, multerFilenameFromMime(file.originalname, file.mimetype));
+        }
+    }),
+    limits: { fileSize: 2 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        if (/^image\//i.test(String(file.mimetype || ''))) {
+            cb(null, true);
+        } else {
+            cb(new Error('Для стикера нужен файл изображения'), false);
+        }
+    }
+});
+
+function stickerUploadSingleMiddleware(fieldName) {
+    return (req, res, next) => {
+        stickerPackImageUpload.single(fieldName)(req, res, (err) => {
+            if (!err) {
+                return next();
+            }
+            if (err instanceof multer.MulterError) {
+                if (err.code === 'LIMIT_FILE_SIZE') {
+                    return res.status(400).json({ error: 'Изображение не больше 2 МБ' });
+                }
+                return res.status(400).json({ error: err.message || 'Ошибка загрузки' });
+            }
+            return res.status(400).json({ error: err.message || 'Ошибка загрузки' });
+        });
+    };
+}
 
 // Initialize database
 initializeDatabase();
@@ -490,11 +1151,14 @@ function authenticateToken(req, res, next) {
     
     jwt.verify(token, JWT_SECRET, (err, decoded) => {
         if (err) {
-            return res.status(403).json({ error: 'Invalid token' });
+            if (err.name === 'TokenExpiredError') {
+                return res.status(401).json({ error: 'Сессия истекла', code: 'TOKEN_EXPIRED' });
+            }
+            return res.status(403).json({ error: 'Недействительный токен', code: 'TOKEN_INVALID' });
         }
         const uid = Number(decoded && decoded.id);
         if (!Number.isFinite(uid)) {
-            return res.status(403).json({ error: 'Invalid token' });
+            return res.status(403).json({ error: 'Недействительный токен', code: 'TOKEN_INVALID' });
         }
         req.user = { ...decoded, id: uid };
         next();
@@ -512,29 +1176,62 @@ function normalizeAvatarForStorage(avatar) {
 
 // API Routes
 
+app.get('/api/config', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({
+        requireRegisterEmailCode: String(process.env.FLOR_REQUIRE_REGISTER_EMAIL_CODE || '')
+            .toLowerCase() === 'true'
+    });
+});
+
 // Register
 app.post('/api/register', authLimiter, async (req, res) => {
     try {
-        let { username, email, password } = req.body;
+        let { username, email, password, emailCode } = req.body;
         username = typeof username === 'string' ? username.trim().slice(0, 32) : '';
         email = typeof email === 'string' ? email.trim().toLowerCase().slice(0, 120) : '';
         password = typeof password === 'string' ? password : '';
+        emailCode = typeof emailCode === 'string' ? emailCode.trim() : '';
+
+        const requireRegisterCode =
+            String(process.env.FLOR_REQUIRE_REGISTER_EMAIL_CODE || '').toLowerCase() === 'true';
+        const hasValidSixDigit = /^\d{6}$/.test(emailCode);
 
         if (!username || !email || !password) {
             return res.status(400).json({ error: 'All fields required' });
         }
-        
+        if (emailCode && !hasValidSixDigit) {
+            return res.status(400).json({ error: 'Invalid email verification code' });
+        }
+        if (requireRegisterCode && !hasValidSixDigit) {
+            return res.status(400).json({ error: 'Email verification code required' });
+        }
+
         if (password.length < 6) {
             return res.status(400).json({ error: 'Password must be at least 6 characters' });
         }
-        
+
         const existingUser = await userDB.findByEmail(email);
         if (existingUser) {
             return res.status(400).json({ error: 'Email already registered' });
         }
-        
+
+        let emailVerified = false;
+        let emailLoginAlerts = false;
+        if (hasValidSixDigit) {
+            const verifyCode = verifyStoredEmailCode(email, 'register', emailCode);
+            if (!verifyCode.ok) {
+                return res.status(400).json({ error: verifyCode.error });
+            }
+            emailVerified = true;
+            emailLoginAlerts = true;
+        }
+
         const hashedPassword = await bcrypt.hash(password, 10);
-        const user = await userDB.create(username, email, hashedPassword);
+        const user = await userDB.create(username, email, hashedPassword, {
+            emailVerified,
+            emailLoginAlerts
+        });
         
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
         
@@ -553,10 +1250,124 @@ app.post('/api/register', authLimiter, async (req, res) => {
     }
 });
 
+app.post('/api/auth/send-email-code', authLimiter, async (req, res) => {
+    try {
+        const purpose = String((req.body && req.body.purpose) || 'register')
+            .trim()
+            .toLowerCase();
+        const email = String((req.body && req.body.email) || '')
+            .trim()
+            .toLowerCase();
+
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            return res.status(400).json({ error: 'Invalid email format' });
+        }
+        if (purpose !== 'register') {
+            return res.status(400).json({ error: 'Unsupported email code purpose' });
+        }
+
+        const existingUser = await userDB.findByEmail(email);
+        if (existingUser) {
+            return res.status(400).json({ error: 'Email already registered' });
+        }
+
+        const key = emailCodeKey(email, purpose);
+        const prev = pendingEmailCodes.get(key);
+        if (prev && Date.now() - prev.lastSentAt < EMAIL_CODE_RESEND_MS) {
+            return res
+                .status(429)
+                .json({ error: 'Please wait before requesting another email code' });
+        }
+
+        const code = createEmailCode();
+        await sendVerificationCodeEmail(email, code);
+        pendingEmailCodes.set(key, {
+            codeHash: hashEmailCode(code),
+            expiresAt: Date.now() + EMAIL_CODE_TTL_MS,
+            lastSentAt: Date.now()
+        });
+
+        res.json({ ok: true, expiresInSec: Math.floor(EMAIL_CODE_TTL_MS / 1000) });
+    } catch (error) {
+        if (error && error.message === 'EMAIL_TRANSPORT_NOT_CONFIGURED') {
+            return res.status(500).json({
+                error: 'Email transport is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS in .env'
+            });
+        }
+        console.error('send-email-code:', error);
+        res.status(500).json({ error: 'Failed to send verification code' });
+    }
+});
+
+app.post('/api/auth/qr/start', authLimiter, async (req, res) => {
+    try {
+        const s = createQrSession();
+        const approveUrl = `${florOriginFromReq(req)}/login.html?qrSession=${encodeURIComponent(s.id)}`;
+        const qrImage = await QRCode.toDataURL(approveUrl, {
+            errorCorrectionLevel: 'M',
+            margin: 1,
+            width: 320
+        });
+        res.json({
+            sessionId: s.id,
+            qrData: approveUrl,
+            qrImage,
+            expiresInSec: Math.floor(QR_SESSION_TTL_MS / 1000)
+        });
+    } catch (e) {
+        console.error('qr-start:', e);
+        res.status(500).json({ error: 'Failed to create QR session' });
+    }
+});
+
+app.get('/api/auth/qr/poll/:sessionId', async (req, res) => {
+    const sessionId = String(req.params.sessionId || '').trim();
+    const s = pendingQrSessions.get(sessionId);
+    if (!s || Date.now() > s.expiresAt) {
+        pendingQrSessions.delete(sessionId);
+        return res.status(404).json({ error: 'QR session expired' });
+    }
+    if (s.status !== 'approved') {
+        return res.json({ status: 'pending' });
+    }
+    pendingQrSessions.delete(sessionId);
+    return res.json({ status: 'approved', token: s.token, user: s.user });
+});
+
+app.post('/api/auth/qr/approve', authenticateToken, async (req, res) => {
+    try {
+        const sessionId = String((req.body && req.body.sessionId) || '').trim();
+        const s = pendingQrSessions.get(sessionId);
+        if (!s || Date.now() > s.expiresAt) {
+            pendingQrSessions.delete(sessionId);
+            return res.status(404).json({ error: 'QR session expired' });
+        }
+        const user = await userDB.findById(req.user.id);
+        if (!user) {
+            return res.status(404).json({ error: 'Пользователь не найден' });
+        }
+        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+        s.status = 'approved';
+        s.token = token;
+        s.user = sanitizeUserForClient(user);
+        if (Number(user.email_verified) === 1 && Number(user.email_login_alerts) === 1) {
+            sendLoginAlertEmail(user.email, user.username, req.ip).catch(() => {});
+        }
+        res.json({ ok: true });
+    } catch (e) {
+        console.error('qr-approve:', e);
+        res.status(500).json({ error: 'QR approve failed' });
+    }
+});
+
 // Login
 app.post('/api/login', authLimiter, async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const email = String((req.body && req.body.email) || '')
+            .trim()
+            .toLowerCase();
+        const password = typeof (req.body && req.body.password) === 'string' ? req.body.password : '';
+        const twoFactorCode = String((req.body && req.body.twoFactorCode) || '').trim();
         
         if (!email || !password) {
             return res.status(400).json({ error: 'Email and password required' });
@@ -571,8 +1382,32 @@ app.post('/api/login', authLimiter, async (req, res) => {
         if (!validPassword) {
             return res.status(400).json({ error: 'Invalid credentials' });
         }
+
+        if (Number(user.email_verified) === 1) {
+            const key = emailCodeKey(email, 'login2fa');
+            if (!/^\d{6}$/.test(twoFactorCode)) {
+                const prev = pendingEmailCodes.get(key);
+                if (!prev || Date.now() - prev.lastSentAt >= EMAIL_CODE_RESEND_MS) {
+                    const code = createEmailCode();
+                    await sendVerificationCodeEmail(email, code);
+                    pendingEmailCodes.set(key, {
+                        codeHash: hashEmailCode(code),
+                        expiresAt: Date.now() + EMAIL_CODE_TTL_MS,
+                        lastSentAt: Date.now()
+                    });
+                }
+                return res.status(401).json({ error: 'Two-factor code required', code: 'TWO_FACTOR_REQUIRED' });
+            }
+            const verifyCode = verifyStoredEmailCode(email, 'login2fa', twoFactorCode);
+            if (!verifyCode.ok) {
+                return res.status(400).json({ error: verifyCode.error });
+            }
+        }
         
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+        if (Number(user.email_verified) === 1 && Number(user.email_login_alerts) === 1) {
+            sendLoginAlertEmail(user.email, user.username, req.ip).catch(() => {});
+        }
         
         res.json({
             token,
@@ -584,8 +1419,154 @@ app.post('/api/login', authLimiter, async (req, res) => {
             }
         });
     } catch (error) {
+        if (error && error.message === 'EMAIL_TRANSPORT_NOT_CONFIGURED') {
+            return res.status(500).json({
+                error: 'Email transport is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS in .env'
+            });
+        }
         console.error('Login error:', error);
         res.status(500).json({ error: 'Login failed' });
+    }
+});
+
+app.post('/api/user/email-alerts/send-code', authenticateToken, authLimiter, async (req, res) => {
+    try {
+        const user = await userDB.findById(req.user.id);
+        if (!user || !user.email) {
+            return res.status(404).json({ error: 'Пользователь не найден' });
+        }
+        const email = String(user.email).trim().toLowerCase();
+        const key = emailCodeKey(email, 'alerts');
+        const prev = pendingEmailCodes.get(key);
+        if (prev && Date.now() - prev.lastSentAt < EMAIL_CODE_RESEND_MS) {
+            return res.status(429).json({ error: 'Please wait before requesting another email code' });
+        }
+        const code = createEmailCode();
+        await sendVerificationCodeEmail(email, code);
+        pendingEmailCodes.set(key, {
+            codeHash: hashEmailCode(code),
+            expiresAt: Date.now() + EMAIL_CODE_TTL_MS,
+            lastSentAt: Date.now()
+        });
+        res.json({ ok: true });
+    } catch (error) {
+        if (error && error.message === 'EMAIL_TRANSPORT_NOT_CONFIGURED') {
+            return res.status(500).json({
+                error: 'Email transport is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS in .env'
+            });
+        }
+        console.error('email-alerts/send-code:', error);
+        res.status(500).json({ error: 'Failed to send verification code' });
+    }
+});
+
+app.post('/api/user/email-alerts/confirm', authenticateToken, authLimiter, async (req, res) => {
+    try {
+        const code = String((req.body && req.body.code) || '').trim();
+        if (!/^\d{6}$/.test(code)) {
+            return res.status(400).json({ error: 'Email verification code required' });
+        }
+        const user = await userDB.findById(req.user.id);
+        if (!user || !user.email) {
+            return res.status(404).json({ error: 'Пользователь не найден' });
+        }
+        const verify = verifyStoredEmailCode(user.email, 'alerts', code);
+        if (!verify.ok) {
+            return res.status(400).json({ error: verify.error });
+        }
+        await userDB.updateEmailSecurity(req.user.id, { email_verified: 1, email_login_alerts: 1 });
+        res.json({ ok: true });
+    } catch (e) {
+        console.error('email-alerts/confirm:', e);
+        res.status(500).json({ error: 'Failed to enable email alerts' });
+    }
+});
+
+app.post('/api/reports', authenticateToken, async (req, res) => {
+    try {
+        const targetType = String((req.body && req.body.targetType) || '').trim().toLowerCase();
+        const targetId = parseInt(req.body && req.body.targetId, 10);
+        let serverId = parseInt(req.body && req.body.serverId, 10);
+        const reason = String((req.body && req.body.reason) || '').trim().slice(0, 120);
+        const details = String((req.body && req.body.details) || '').trim().slice(0, 1200);
+        if (!['message', 'user', 'server'].includes(targetType)) {
+            return res.status(400).json({ error: 'Некорректный тип жалобы' });
+        }
+        if (!reason) {
+            return res.status(400).json({ error: 'Укажите причину жалобы' });
+        }
+        if ((targetType === 'message' || targetType === 'user') && Number.isNaN(targetId)) {
+            return res.status(400).json({ error: 'Некорректная цель жалобы' });
+        }
+        if (targetType === 'server' && Number.isNaN(serverId)) {
+            return res.status(400).json({ error: 'Некорректная группа' });
+        }
+
+        if (targetType === 'message') {
+            const meta = await messageDB.getMeta(targetId);
+            if (!meta) return res.status(404).json({ error: 'Сообщение не найдено' });
+            const ch = await channelDB.getById(meta.channel_id);
+            if (!ch) return res.status(404).json({ error: 'Канал не найден' });
+            serverId = Number(ch.server_id);
+            if (!(await assertServerMember(req.user.id, serverId))) {
+                return res.status(403).json({ error: 'Нет доступа к этой группе' });
+            }
+        } else if (targetType === 'user') {
+            if (Number.isNaN(serverId)) {
+                return res.status(400).json({ error: 'Укажите группу для жалобы на пользователя' });
+            }
+            if (!(await assertServerMember(req.user.id, serverId))) {
+                return res.status(403).json({ error: 'Нет доступа к этой группе' });
+            }
+        } else {
+            if (!(await assertServerMember(req.user.id, serverId))) {
+                return res.status(403).json({ error: 'Нет доступа к этой группе' });
+            }
+        }
+
+        const created = await moderationReportDB.create({
+            reporterId: req.user.id,
+            serverId,
+            targetType,
+            targetId: Number.isNaN(targetId) ? null : targetId,
+            reason,
+            details
+        });
+        res.status(201).json({ ok: true, id: created.id });
+    } catch (e) {
+        console.error('POST /api/reports:', e);
+        res.status(500).json({ error: 'Не удалось отправить жалобу' });
+    }
+});
+
+app.get('/api/servers/:serverId/reports', authenticateToken, async (req, res) => {
+    try {
+        const sid = parseInt(req.params.serverId, 10);
+        if (Number.isNaN(sid)) return res.status(400).json({ error: 'Некорректная группа' });
+        const srv = await assertServerOwner(req.user.id, sid);
+        if (!srv) return res.status(403).json({ error: 'Только владелец может смотреть жалобы' });
+        const status = String((req.query && req.query.status) || 'open').trim().toLowerCase();
+        const rows = await moderationReportDB.getByServer(sid, status || 'open');
+        res.json(rows);
+    } catch (e) {
+        console.error('GET /api/servers/:serverId/reports:', e);
+        res.status(500).json({ error: 'Не удалось загрузить жалобы' });
+    }
+});
+
+app.patch('/api/reports/:reportId/resolve', authenticateToken, async (req, res) => {
+    try {
+        const rid = parseInt(req.params.reportId, 10);
+        if (Number.isNaN(rid)) return res.status(400).json({ error: 'Некорректная жалоба' });
+        const row = await moderationReportDB.findById(rid);
+        if (!row) return res.status(404).json({ error: 'Жалоба не найдена' });
+        const srv = await assertServerOwner(req.user.id, row.server_id);
+        if (!srv) return res.status(403).json({ error: 'Только владелец может закрывать жалобы' });
+        await moderationReportDB.resolve(rid, req.user.id);
+        res.json({ ok: true });
+    } catch (e) {
+        console.error('PATCH /api/reports/:reportId/resolve:', e);
+        res.status(500).json({ error: 'Не удалось закрыть жалобу' });
     }
 });
 
@@ -740,6 +1721,15 @@ app.delete('/api/messages/:messageId', authenticateToken, async (req, res) => {
         if (!result.changes) {
             return res.status(404).json({ error: 'Не удалено' });
         }
+        pinDB
+            .listChannelPins(meta.channel_id)
+            .then((pins) => {
+                io.to(`server-${ch.server_id}`).emit('channel-pins-updated', {
+                    channelId: meta.channel_id,
+                    pins
+                });
+            })
+            .catch(() => {});
         io.to(`server-${ch.server_id}`).emit('message-deleted', {
             channelId: meta.channel_id,
             messageId
@@ -747,6 +1737,48 @@ app.delete('/api/messages/:messageId', authenticateToken, async (req, res) => {
         res.json({ ok: true });
     } catch (error) {
         console.error('DELETE message:', error);
+        res.status(500).json({ error: 'Не удалось удалить сообщение' });
+    }
+});
+
+app.delete('/api/messages/:messageId/moderate', authenticateToken, async (req, res) => {
+    try {
+        const messageId = parseInt(req.params.messageId, 10);
+        if (Number.isNaN(messageId)) {
+            return res.status(400).json({ error: 'Некорректный id' });
+        }
+        const meta = await messageDB.getMeta(messageId);
+        if (!meta) {
+            return res.status(404).json({ error: 'Сообщение не найдено' });
+        }
+        const ch = await channelDB.getById(meta.channel_id);
+        if (!ch || ch.server_id == null) {
+            return res.status(404).json({ error: 'Канал не найден' });
+        }
+        const srv = await assertServerOwner(req.user.id, ch.server_id);
+        if (!srv) {
+            return res.status(403).json({ error: 'Только владелец группы может удалить чужое сообщение' });
+        }
+        const result = await messageDB.deleteOwn(messageId, meta.user_id);
+        if (!result.changes) {
+            return res.status(404).json({ error: 'Не удалено' });
+        }
+        pinDB
+            .listChannelPins(meta.channel_id)
+            .then((pins) => {
+                io.to(`server-${ch.server_id}`).emit('channel-pins-updated', {
+                    channelId: meta.channel_id,
+                    pins
+                });
+            })
+            .catch(() => {});
+        io.to(`server-${ch.server_id}`).emit('message-deleted', {
+            channelId: meta.channel_id,
+            messageId
+        });
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('DELETE moderated message:', error);
         res.status(500).json({ error: 'Не удалось удалить сообщение' });
     }
 });
@@ -773,6 +1805,14 @@ app.delete('/api/dm-messages/:messageId', authenticateToken, async (req, res) =>
         if (!result.changes) {
             return res.status(404).json({ error: 'Не удалено' });
         }
+        const a = Number(dm.sender_id);
+        const b = Number(dm.receiver_id);
+        pinDB
+            .listDmPinsForPeerPair(a, b)
+            .then((pins) => {
+                emitFlorDmPinsToUsers(a, b, { pins });
+            })
+            .catch(() => {});
         emitToUserSockets(dm.sender_id, 'dm-message-deleted', { messageId });
         emitToUserSockets(dm.receiver_id, 'dm-message-deleted', { messageId });
         res.json({ ok: true });
@@ -862,7 +1902,7 @@ app.get('/api/users', authenticateToken, async (req, res) => {
 });
 
 // File upload
-app.post('/api/upload', authenticateToken, upload.single('file'), async (req, res) => {
+app.post('/api/upload', authenticateToken, uploadSingleMiddleware('file'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
@@ -900,15 +1940,11 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
     }
 });
 
-/** Голосовые и прочие аудио в ЛС (channel_id = NULL) */
-app.post('/api/dm/upload', authenticateToken, upload.single('file'), async (req, res) => {
+/** Вложения в ЛС (channel_id = NULL): те же типы, что и в канале сервера */
+app.post('/api/dm/upload', authenticateToken, uploadSingleMiddleware('file'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'Нет файла' });
-        }
-        const mt = String(req.file.mimetype || '').toLowerCase();
-        if (!mt.startsWith('audio/')) {
-            return res.status(400).json({ error: 'Разрешены только аудиофайлы' });
         }
         const receiverId = parseInt(req.body && req.body.receiverId, 10);
         if (Number.isNaN(receiverId)) {
@@ -939,6 +1975,102 @@ app.post('/api/dm/upload', authenticateToken, upload.single('file'), async (req,
     }
 });
 
+// Паки стикеров: свои + публичные; файлы в /uploads/stickers/
+app.get('/api/sticker-packs', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const packRows = await stickerPackDB.listPacksForUser(userId);
+        const packs = [];
+        for (const p of packRows) {
+            const items = await stickerPackDB.listItems(p.id);
+            packs.push({
+                id: p.id,
+                name: p.name,
+                is_public: !!Number(p.is_public),
+                owner_id: p.owner_id,
+                owner_name: p.owner_name,
+                mine: Number(p.owner_id) === Number(userId),
+                items: items.map((it) => {
+                    const fn = String(it.filename || '').replace(/^\//, '');
+                    return {
+                        id: it.id,
+                        url: fn.startsWith('stickers/') ? `/uploads/${fn}` : `/uploads/stickers/${fn}`
+                    };
+                })
+            });
+        }
+        res.json({ packs });
+    } catch (e) {
+        console.error('GET /api/sticker-packs:', e);
+        res.status(500).json({ error: 'Ошибка загрузки паков' });
+    }
+});
+
+app.post('/api/sticker-packs', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const n = await stickerPackDB.countByOwner(userId);
+        if (n >= FLOR_MAX_STICKER_PACKS_PER_USER) {
+            return res.status(400).json({ error: `Максимум ${FLOR_MAX_STICKER_PACKS_PER_USER} паков` });
+        }
+        const name = req.body && req.body.name;
+        const isPublic = !!(
+            req.body &&
+            (req.body.is_public === true ||
+                req.body.is_public === '1' ||
+                req.body.is_public === 1 ||
+                req.body.is_public === 'true')
+        );
+        const row = await stickerPackDB.create(userId, name, isPublic);
+        res.json({ pack: { id: row.id, name: row.name, is_public: !!row.is_public, owner_id: row.owner_id } });
+    } catch (e) {
+        if (e && e.message === 'EMPTY_NAME') {
+            return res.status(400).json({ error: 'Введите название пака' });
+        }
+        console.error('POST /api/sticker-packs:', e);
+        res.status(500).json({ error: 'Не удалось создать пак' });
+    }
+});
+
+app.post(
+    '/api/sticker-packs/:packId/stickers',
+    authenticateToken,
+    stickerUploadSingleMiddleware('file'),
+    async (req, res) => {
+        try {
+            if (!req.file) {
+                return res.status(400).json({ error: 'Нет файла' });
+            }
+            const packId = parseInt(req.params.packId, 10);
+            if (Number.isNaN(packId)) {
+                return res.status(400).json({ error: 'Некорректный пак' });
+            }
+            const pack = await stickerPackDB.getPack(packId);
+            if (!pack) {
+                return res.status(404).json({ error: 'Пак не найден' });
+            }
+            if (Number(pack.owner_id) !== Number(req.user.id)) {
+                return res.status(403).json({ error: 'Можно добавлять только в свои паки' });
+            }
+            const cnt = await stickerPackDB.countItemsInPack(packId);
+            if (cnt >= FLOR_MAX_STICKERS_PER_PACK) {
+                return res.status(400).json({ error: `В паке максимум ${FLOR_MAX_STICKERS_PER_PACK} стикеров` });
+            }
+            const rel = 'stickers/' + req.file.filename;
+            const item = await stickerPackDB.addItem(packId, rel, cnt);
+            res.json({
+                item: {
+                    id: item.id,
+                    url: '/uploads/' + rel
+                }
+            });
+        } catch (e) {
+            console.error('POST /api/sticker-packs/:id/stickers:', e);
+            res.status(500).json({ error: 'Не удалось сохранить стикер' });
+        }
+    }
+);
+
 // Get messages by channel (только участники сервера)
 app.get('/api/messages/:channelId', authenticateToken, async (req, res) => {
     try {
@@ -959,6 +2091,188 @@ app.get('/api/messages/:channelId', authenticateToken, async (req, res) => {
     }
 });
 
+app.get('/api/channels/:channelId/pins', authenticateToken, async (req, res) => {
+    try {
+        const channelId = parseInt(req.params.channelId, 10);
+        if (Number.isNaN(channelId)) {
+            return res.status(400).json({ error: 'Некорректный канал' });
+        }
+        const access = await assertChannelMember(req.user.id, channelId);
+        if (!access.ok) {
+            return res.status(access.status).json({ error: access.error });
+        }
+        const pins = await pinDB.listChannelPins(channelId);
+        res.json({ pins });
+    } catch (error) {
+        console.error('GET channel pins:', error);
+        res.status(500).json({ error: 'Failed to get pins' });
+    }
+});
+
+app.post('/api/channels/:channelId/pins', authenticateToken, async (req, res) => {
+    try {
+        const channelId = parseInt(req.params.channelId, 10);
+        const messageId = parseInt(req.body && req.body.messageId, 10);
+        if (Number.isNaN(channelId) || Number.isNaN(messageId)) {
+            return res.status(400).json({ error: 'Некорректные данные' });
+        }
+        const access = await assertChannelMember(req.user.id, channelId);
+        if (!access.ok) {
+            return res.status(access.status).json({ error: access.error });
+        }
+        const meta = await messageDB.getMeta(messageId);
+        if (!meta || Number(meta.channel_id) !== channelId) {
+            return res.status(404).json({ error: 'Сообщение не найдено в канале' });
+        }
+        const n = await pinDB.countChannelPins(channelId);
+        if (n >= FLOR_MAX_CHANNEL_PINS) {
+            return res.status(400).json({ error: `Нельзя закрепить больше ${FLOR_MAX_CHANNEL_PINS} сообщений` });
+        }
+        try {
+            await pinDB.addChannelPin(channelId, messageId, req.user.id);
+        } catch (e) {
+            if (e && (e.message || '').indexOf('UNIQUE') >= 0) {
+                const pins = await pinDB.listChannelPins(channelId);
+                return res.json({ ok: true, already: true, pins });
+            }
+            throw e;
+        }
+        const pins = await pinDB.listChannelPins(channelId);
+        io.to(`server-${access.channel.server_id}`).emit('channel-pins-updated', { channelId, pins });
+        res.json({ ok: true, pins });
+    } catch (error) {
+        console.error('POST channel pin:', error);
+        res.status(500).json({ error: 'Не удалось закрепить' });
+    }
+});
+
+app.delete('/api/channels/:channelId/pins/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const channelId = parseInt(req.params.channelId, 10);
+        const messageId = parseInt(req.params.messageId, 10);
+        if (Number.isNaN(channelId) || Number.isNaN(messageId)) {
+            return res.status(400).json({ error: 'Некорректные данные' });
+        }
+        const access = await assertChannelMember(req.user.id, channelId);
+        if (!access.ok) {
+            return res.status(access.status).json({ error: access.error });
+        }
+        await pinDB.removeChannelPin(channelId, messageId);
+        const pins = await pinDB.listChannelPins(channelId);
+        io.to(`server-${access.channel.server_id}`).emit('channel-pins-updated', { channelId, pins });
+        res.json({ ok: true, pins });
+    } catch (error) {
+        console.error('DELETE channel pin:', error);
+        res.status(500).json({ error: 'Не удалось убрать закрепление' });
+    }
+});
+
+app.get('/api/dm/pins', authenticateToken, async (req, res) => {
+    try {
+        const peerId = parseInt(req.query && req.query.peerId, 10);
+        if (Number.isNaN(peerId)) {
+            return res.status(400).json({ error: 'Некорректный peerId' });
+        }
+        if (peerId === req.user.id) {
+            return res.status(400).json({ error: 'Некорректный запрос' });
+        }
+        const allowed = await friendDB.checkFriendship(req.user.id, peerId);
+        if (!allowed) {
+            return res.status(403).json({ error: 'Нет доступа' });
+        }
+        const pins = await pinDB.listDmPinsForPeerPair(req.user.id, peerId);
+        res.json({ pins });
+    } catch (error) {
+        console.error('GET dm pins:', error);
+        res.status(500).json({ error: 'Failed to get pins' });
+    }
+});
+
+app.post('/api/dm/pins', authenticateToken, async (req, res) => {
+    try {
+        const messageId = parseInt(req.body && req.body.messageId, 10);
+        const peerId = parseInt(req.body && req.body.peerId, 10);
+        if (Number.isNaN(messageId) || Number.isNaN(peerId)) {
+            return res.status(400).json({ error: 'Некорректные данные' });
+        }
+        if (peerId === req.user.id) {
+            return res.status(400).json({ error: 'Некорректный запрос' });
+        }
+        const allowed = await friendDB.checkFriendship(req.user.id, peerId);
+        if (!allowed) {
+            return res.status(403).json({ error: 'Нет доступа' });
+        }
+        const dm = await dmDB.getById(messageId);
+        if (!dm) {
+            return res.status(404).json({ error: 'Сообщение не найдено' });
+        }
+        const a = Number(req.user.id);
+        const b = Number(peerId);
+        const ok =
+            (Number(dm.sender_id) === a && Number(dm.receiver_id) === b) ||
+            (Number(dm.sender_id) === b && Number(dm.receiver_id) === a);
+        if (!ok) {
+            return res.status(400).json({ error: 'Сообщение не из этого чата' });
+        }
+        const cur = await pinDB.listDmPinsForPeerPair(a, b);
+        if (cur.length >= FLOR_MAX_DM_PINS) {
+            return res.status(400).json({ error: `Нельзя закрепить больше ${FLOR_MAX_DM_PINS} сообщений` });
+        }
+        try {
+            await pinDB.addDmPin(messageId, req.user.id);
+        } catch (e) {
+            if (e && (e.message || '').indexOf('UNIQUE') >= 0) {
+                const pins = await pinDB.listDmPinsForPeerPair(a, b);
+                return res.json({ ok: true, already: true, pins });
+            }
+            throw e;
+        }
+        const pins = await pinDB.listDmPinsForPeerPair(a, b);
+        emitFlorDmPinsToUsers(a, b, { peerId, pins });
+        res.json({ ok: true, pins });
+    } catch (error) {
+        console.error('POST dm pin:', error);
+        res.status(500).json({ error: 'Не удалось закрепить' });
+    }
+});
+
+app.delete('/api/dm/pins/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const messageId = parseInt(req.params.messageId, 10);
+        const peerId = parseInt(
+            (req.query && req.query.peerId) || (req.body && req.body.peerId),
+            10
+        );
+        if (Number.isNaN(messageId) || Number.isNaN(peerId)) {
+            return res.status(400).json({ error: 'Некорректные данные' });
+        }
+        const allowed = await friendDB.checkFriendship(req.user.id, peerId);
+        if (!allowed) {
+            return res.status(403).json({ error: 'Нет доступа' });
+        }
+        const dm = await dmDB.getById(messageId);
+        if (dm) {
+            const a = Number(req.user.id);
+            const b = Number(peerId);
+            const ok =
+                (Number(dm.sender_id) === a && Number(dm.receiver_id) === b) ||
+                (Number(dm.sender_id) === b && Number(dm.receiver_id) === a);
+            if (!ok) {
+                return res.status(400).json({ error: 'Сообщение не из этого чата' });
+            }
+        }
+        await pinDB.removeDmPin(messageId);
+        const a = Number(req.user.id);
+        const b = Number(peerId);
+        const pins = await pinDB.listDmPinsForPeerPair(a, b);
+        emitFlorDmPinsToUsers(a, b, { peerId, pins });
+        res.json({ ok: true, pins });
+    } catch (error) {
+        console.error('DELETE dm pin:', error);
+        res.status(500).json({ error: 'Не удалось убрать закрепление' });
+    }
+});
+
 /** Отправка в канал сервера (надёжнее чистого socket: видно ошибки доступа) */
 app.post('/api/messages', authenticateToken, async (req, res) => {
     try {
@@ -972,16 +2286,19 @@ app.post('/api/messages', authenticateToken, async (req, res) => {
         if (!access.ok) {
             return res.status(access.status).json({ error: access.error });
         }
-        const user = await userDB.findById(req.user.id);
-        const savedMessage = await messageDB.create(text, req.user.id, channelId);
-        const broadcastMessage = {
-            id: savedMessage.id,
-            senderId: req.user.id,
-            author: user.username,
-            avatar: user.avatar || user.username.charAt(0).toUpperCase(),
-            text,
-            timestamp: new Date().toISOString()
-        };
+        let replyToId = null;
+        if (req.body && req.body.replyToId != null && req.body.replyToId !== '') {
+            const r = parseInt(req.body.replyToId, 10);
+            if (!Number.isNaN(r)) {
+                const rmeta = await messageDB.getMeta(r);
+                if (rmeta && Number(rmeta.channel_id) === channelId) {
+                    replyToId = r;
+                }
+            }
+        }
+        const saved = await messageDB.create(text, req.user.id, channelId, replyToId);
+        const row = await messageDB.getByIdWithReply(saved.id);
+        const broadcastMessage = florChannelRowToBroadcastMessage(row);
         io.to(`server-${access.channel.server_id}`).emit('new-message', {
             channelId,
             serverId: access.channel.server_id,
@@ -1057,6 +2374,67 @@ app.post('/api/dm/read', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('POST /api/dm/read:', error);
         res.status(500).json({ error: 'Не удалось обновить статус' });
+    }
+});
+
+/**
+ * Прокси к OpenAI-совместимому Chat Completions или Google Gemini (ключ с клиента или из .env).
+ * Текст чата уходит на сторонний API — включайте только если доверяете провайдеру.
+ */
+app.post('/api/ai/complete', authenticateToken, aiUserLimiter, async (req, res) => {
+    try {
+        const provider = String((req.body && req.body.provider) || '').toLowerCase();
+        const messages = sanitizeAiMessages(req.body && req.body.messages);
+        if (!messages) {
+            return res.status(400).json({ error: 'Передайте messages: [{ role, content }, …]' });
+        }
+        let maxT = parseInt(req.body && req.body.maxTokens, 10);
+        if (!Number.isFinite(maxT)) maxT = 1200;
+        maxT = Math.min(Math.max(maxT, 64), 8192);
+
+        const clientKey = typeof req.body.apiKey === 'string' ? req.body.apiKey.trim() : '';
+
+        if (provider === 'openai') {
+            const apiKey = clientKey || process.env.OPENAI_API_KEY || process.env.FLOR_OPENAI_API_KEY || '';
+            if (!apiKey) {
+                return res.status(400).json({
+                    error: 'Нужен API-ключ OpenAI: в Настройках → ИИ или переменная OPENAI_API_KEY / FLOR_OPENAI_API_KEY на сервере.'
+                });
+            }
+            const baseRaw = (process.env.FLOR_OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+            const model =
+                (typeof req.body.model === 'string' && req.body.model.trim()) ||
+                process.env.FLOR_OPENAI_MODEL ||
+                'gpt-4o-mini';
+            const text = await florProxyOpenAIChat({
+                baseUrl: baseRaw,
+                apiKey,
+                model,
+                messages,
+                maxTokens: maxT
+            });
+            return res.json({ text });
+        }
+
+        if (provider === 'gemini') {
+            const apiKey = clientKey || process.env.GEMINI_API_KEY || process.env.FLOR_GEMINI_API_KEY || '';
+            if (!apiKey) {
+                return res.status(400).json({
+                    error: 'Нужен ключ Google AI (Gemini): в Настройках → ИИ или GEMINI_API_KEY на сервере.'
+                });
+            }
+            const model =
+                (typeof req.body.model === 'string' && req.body.model.trim()) ||
+                process.env.FLOR_GEMINI_MODEL ||
+                'gemini-1.5-flash';
+            const text = await florProxyGeminiGenerate({ apiKey, model, messages, maxTokens: maxT });
+            return res.json({ text });
+        }
+
+        return res.status(400).json({ error: 'provider должен быть openai или gemini' });
+    } catch (e) {
+        console.error('POST /api/ai/complete:', e && e.message ? e.message : e);
+        res.status(502).json({ error: e.message || 'Ошибка провайдера ИИ' });
     }
 });
 
@@ -1226,6 +2604,55 @@ app.delete('/api/servers/:serverId/members/:userId', authenticateToken, async (r
     }
 });
 
+app.post('/api/servers/:serverId/ban', authenticateToken, async (req, res) => {
+    try {
+        const serverId = parseInt(req.params.serverId, 10);
+        const targetId = parseInt(req.body && req.body.userId, 10);
+        const reason = String((req.body && req.body.reason) || '').trim().slice(0, 240);
+        if (Number.isNaN(serverId) || Number.isNaN(targetId)) {
+            return res.status(400).json({ error: 'Некорректный запрос' });
+        }
+        const srv = await assertServerOwner(req.user.id, serverId);
+        if (!srv) {
+            return res.status(403).json({ error: 'Только владелец может блокировать участников' });
+        }
+        if (Number(targetId) === Number(srv.owner_id)) {
+            return res.status(400).json({ error: 'Нельзя заблокировать владельца' });
+        }
+        await serverBanDB.banUser(serverId, targetId, reason || null, req.user.id);
+        await serverDB.removeMember(serverId, targetId);
+        for (const u of users.values()) {
+            if (Number(u.id) === Number(targetId)) {
+                io.to(u.socketId).emit('server-membership-update', { serverId, removed: true });
+            }
+        }
+        io.to(`server-${serverId}`).emit('server-membership-update', { serverId });
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('POST server ban:', error);
+        res.status(500).json({ error: 'Не удалось заблокировать пользователя' });
+    }
+});
+
+app.delete('/api/servers/:serverId/ban/:userId', authenticateToken, async (req, res) => {
+    try {
+        const serverId = parseInt(req.params.serverId, 10);
+        const userId = parseInt(req.params.userId, 10);
+        if (Number.isNaN(serverId) || Number.isNaN(userId)) {
+            return res.status(400).json({ error: 'Некорректный запрос' });
+        }
+        const srv = await assertServerOwner(req.user.id, serverId);
+        if (!srv) {
+            return res.status(403).json({ error: 'Только владелец может снять блокировку' });
+        }
+        await serverBanDB.unbanUser(serverId, userId);
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('DELETE server ban:', error);
+        res.status(500).json({ error: 'Не удалось снять блокировку' });
+    }
+});
+
 app.post(
     '/api/servers/:serverId/icon',
     authenticateToken,
@@ -1356,6 +2783,10 @@ app.post('/api/servers/:serverId/members', authenticateToken, async (req, res) =
         if (!friendsA && !friendsB) {
             return res.status(403).json({ error: 'В группу можно добавить только друга из списка друзей' });
         }
+        const banned = await serverBanDB.isBanned(serverId, target.id);
+        if (banned) {
+            return res.status(403).json({ error: 'Пользователь заблокирован в этой группе' });
+        }
         if (await serverDB.isMember(serverId, target.id)) {
             return res.status(400).json({ error: 'Уже участник группы' });
         }
@@ -1368,6 +2799,128 @@ app.post('/api/servers/:serverId/members', authenticateToken, async (req, res) =
     } catch (error) {
         console.error('POST server member:', error);
         res.status(500).json({ error: 'Не удалось добавить участника' });
+    }
+});
+
+app.get('/api/servers/:serverId/invites', authenticateToken, async (req, res) => {
+    try {
+        const serverId = parseInt(req.params.serverId, 10);
+        if (Number.isNaN(serverId)) {
+            return res.status(400).json({ error: 'Некорректный сервер' });
+        }
+        if (!(await serverDB.isMember(serverId, req.user.id))) {
+            return res.status(403).json({ error: 'Нет доступа к серверу' });
+        }
+        const srv = await serverDB.getById(serverId);
+        if (!srv || srv.owner_id !== req.user.id) {
+            return res.status(403).json({ error: 'Только владелец может управлять ссылками' });
+        }
+        const rows = await serverInviteDB.listByServer(serverId);
+        const base = florOriginFromReq(req);
+        const out = rows.map((x) => ({
+            id: x.id,
+            code: x.code,
+            url: `${base}/login.html?invite=${encodeURIComponent(x.code)}`,
+            revoked: Number(x.revoked) === 1,
+            usesCount: Number(x.uses_count) || 0,
+            createdAt: x.created_at,
+            revokedAt: x.revoked_at,
+            lastUsedAt: x.last_used_at,
+            createdBy: x.created_by_username || null
+        }));
+        res.json(out);
+    } catch (error) {
+        console.error('GET server invites:', error);
+        res.status(500).json({ error: 'Не удалось загрузить ссылки' });
+    }
+});
+
+app.post('/api/servers/:serverId/invites', authenticateToken, async (req, res) => {
+    try {
+        const serverId = parseInt(req.params.serverId, 10);
+        if (Number.isNaN(serverId)) {
+            return res.status(400).json({ error: 'Некорректный сервер' });
+        }
+        if (!(await serverDB.isMember(serverId, req.user.id))) {
+            return res.status(403).json({ error: 'Нет доступа к серверу' });
+        }
+        const srv = await serverDB.getById(serverId);
+        if (!srv || srv.owner_id !== req.user.id) {
+            return res.status(403).json({ error: 'Только владелец может создавать ссылки' });
+        }
+        const code = crypto.randomBytes(12).toString('base64url').replace(/[_-]/g, '').slice(0, 16);
+        const created = await serverInviteDB.create({ serverId, code, createdBy: req.user.id });
+        const base = florOriginFromReq(req);
+        res.status(201).json({
+            id: created.id,
+            code: created.code,
+            url: `${base}/login.html?invite=${encodeURIComponent(created.code)}`
+        });
+    } catch (error) {
+        console.error('POST server invite:', error);
+        res.status(500).json({ error: 'Не удалось создать ссылку' });
+    }
+});
+
+app.delete('/api/servers/:serverId/invites/:inviteId', authenticateToken, async (req, res) => {
+    try {
+        const serverId = parseInt(req.params.serverId, 10);
+        const inviteId = parseInt(req.params.inviteId, 10);
+        if (Number.isNaN(serverId) || Number.isNaN(inviteId)) {
+            return res.status(400).json({ error: 'Некорректные параметры' });
+        }
+        if (!(await serverDB.isMember(serverId, req.user.id))) {
+            return res.status(403).json({ error: 'Нет доступа к серверу' });
+        }
+        const srv = await serverDB.getById(serverId);
+        if (!srv || srv.owner_id !== req.user.id) {
+            return res.status(403).json({ error: 'Только владелец может удалять ссылки' });
+        }
+        const result = await serverInviteDB.revokeById(inviteId, serverId);
+        if (!result.changes) {
+            return res.status(404).json({ error: 'Ссылка не найдена или уже удалена' });
+        }
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('DELETE server invite:', error);
+        res.status(500).json({ error: 'Не удалось удалить ссылку' });
+    }
+});
+
+app.post('/api/invites/:code/join', authenticateToken, async (req, res) => {
+    try {
+        const code = String(req.params.code || '').trim();
+        if (!code || code.length < 6) {
+            return res.status(400).json({ error: 'Некорректная ссылка-приглашение' });
+        }
+        const inv = await serverInviteDB.findByCode(code);
+        if (!inv || Number(inv.revoked) === 1) {
+            return res.status(404).json({ error: 'Ссылка недействительна' });
+        }
+        const serverId = Number(inv.server_id);
+        if (Number.isNaN(serverId)) {
+            return res.status(404).json({ error: 'Ссылка недействительна' });
+        }
+        const banned = await serverBanDB.isBanned(serverId, req.user.id);
+        if (banned) {
+            return res.status(403).json({ error: 'Вы заблокированы в этой группе' });
+        }
+        if (!(await serverDB.isMember(serverId, req.user.id))) {
+            await serverDB.addMember(serverId, req.user.id);
+            const joinedUser = Array.from(users.values()).find((u) => u.id === req.user.id);
+            if (joinedUser) {
+                io.to(joinedUser.socketId).emit('server-membership-update', { serverId });
+            }
+        }
+        await serverInviteDB.touchUseByCode(code);
+        const server = await serverDB.getById(serverId);
+        if (!server) {
+            return res.status(404).json({ error: 'Группа не найдена' });
+        }
+        res.json({ ok: true, server });
+    } catch (error) {
+        console.error('POST invite join:', error);
+        res.status(500).json({ error: 'Не удалось вступить по ссылке' });
     }
 });
 
@@ -1556,6 +3109,22 @@ app.delete('/api/friends/:friendId', authenticateToken, async (req, res) => {
 
 // Store connected users
 const users = new Map();
+
+function emitToUserId(userId, event, payload) {
+    const uid = Number(userId);
+    if (!Number.isFinite(uid)) return;
+    for (const u of users.values()) {
+        if (Number(u.id) === uid && u.socketId) {
+            io.to(u.socketId).emit(event, payload);
+        }
+    }
+}
+
+function emitFlorDmPinsToUsers(userA, userB, payload) {
+    emitToUserId(userA, 'dm-pins-updated', payload);
+    emitToUserId(userB, 'dm-pins-updated', payload);
+}
+
 const rooms = new Map();
 /** socketId → голосовое состояние в комнате */
 const voiceUserState = new Map();
@@ -1735,18 +3304,20 @@ io.on('connection', async (socket) => {
                 return;
             }
 
-            const user = await userDB.findById(socket.userId);
             const cid = parseInt(channelId, 10);
-            const savedMessage = await messageDB.create(text, socket.userId, cid);
-
-            const broadcastMessage = {
-                id: savedMessage.id,
-                senderId: socket.userId,
-                author: user.username,
-                avatar: user.avatar || user.username.charAt(0).toUpperCase(),
-                text,
-                timestamp: new Date().toISOString()
-            };
+            let replyToId = null;
+            if (message && message.replyToId != null && message.replyToId !== '') {
+                const r = parseInt(message.replyToId, 10);
+                if (!Number.isNaN(r)) {
+                    const rmeta = await messageDB.getMeta(r);
+                    if (rmeta && Number(rmeta.channel_id) === cid) {
+                        replyToId = r;
+                    }
+                }
+            }
+            const savedMessage = await messageDB.create(text, socket.userId, cid, replyToId);
+            const row = await messageDB.getByIdWithReply(savedMessage.id);
+            const broadcastMessage = florChannelRowToBroadcastMessage(row);
 
             io.to(`server-${access.channel.server_id}`).emit('new-message', {
                 channelId: cid,
@@ -1770,19 +3341,28 @@ io.on('connection', async (socket) => {
             const allowed = await friendDB.checkFriendship(socket.userId, receiverId);
             if (!allowed) return;
 
-            const sender = await userDB.findById(socket.userId);
+            let replyToId = null;
+            if (data.message && data.message.replyToId != null && data.message.replyToId !== '') {
+                const r = parseInt(data.message.replyToId, 10);
+                if (!Number.isNaN(r)) {
+                    const parent = await dmDB.getById(r);
+                    const a = Number(socket.userId);
+                    const b = Number(receiverId);
+                    if (
+                        parent &&
+                        ((Number(parent.sender_id) === a && Number(parent.receiver_id) === b) ||
+                            (Number(parent.sender_id) === b && Number(parent.receiver_id) === a))
+                    ) {
+                        replyToId = r;
+                    }
+                }
+            }
 
-            const savedMessage = await dmDB.create(text, socket.userId, receiverId);
-
-            const messagePayload = {
-                id: savedMessage.id,
-                senderId: socket.userId,
-                author: sender.username,
-                avatar: sender.avatar || sender.username.charAt(0).toUpperCase(),
-                text,
-                timestamp: new Date(),
-                read: 0
-            };
+            const savedMessage = await dmDB.create(text, socket.userId, receiverId, replyToId);
+            const row = await dmDB.getByIdWithReply(savedMessage.id);
+            const messagePayload = florDmRowToSocketPayload(row);
+            if (!messagePayload) return;
+            messagePayload.read = messagePayload.read != null ? messagePayload.read : 0;
 
             const receiverSocket = Array.from(users.values()).find((u) => u.id === receiverId);
 
@@ -2187,7 +3767,11 @@ async function startFlorServer() {
         await ensureChannelSchema();
         await ensureE2eeSchema();
         await ensureUserProfileSchema();
+        await ensureUserSecuritySchema();
+        await ensureServerInviteSchema();
         await ensureDmReactionsSchema();
+        await ensureMessageReplyAndPinsSchema();
+        await ensureStickerPackSchema();
         await migrateChannelsForEmptyServers();
         await migrateChannelHierarchy();
     } catch (err) {

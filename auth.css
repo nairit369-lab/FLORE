@@ -17,6 +17,9 @@
     --flor-border: #e9e4f4;
     --flor-white: #ffffff;
     --flor-font: 'Outfit', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --glass-bg: rgba(255, 255, 255, 0.52);
+    --glass-stroke: rgba(255, 255, 255, 0.6);
+    --glass-shadow: 0 24px 80px rgba(94, 61, 173, 0.22);
 }
 
 .flor-insecure-ctx-banner {
@@ -47,16 +50,73 @@ body {
     padding-bottom: env(safe-area-inset-bottom, 0px);
     padding-left: env(safe-area-inset-left, 0px);
     padding-right: env(safe-area-inset-right, 0px);
-    background: radial-gradient(ellipse 80% 60% at 100% 0%, rgba(217, 70, 239, 0.08), transparent 50%),
-        radial-gradient(ellipse 60% 50% at 0% 100%, rgba(124, 58, 237, 0.07), transparent 45%), var(--flor-purple-50);
+    background:
+        radial-gradient(ellipse 80% 60% at 100% 0%, rgba(217, 70, 239, 0.2), transparent 52%),
+        radial-gradient(ellipse 70% 55% at 0% 100%, rgba(124, 58, 237, 0.18), transparent 48%),
+        linear-gradient(140deg, #f6f3ff 0%, #ece8ff 35%, #f7f4ff 100%);
     color: var(--flor-text);
     -webkit-tap-highlight-color: transparent;
+    overflow-x: hidden;
 }
 
 .auth-layout {
     display: flex;
     width: 100%;
     min-height: 100vh;
+    position: relative;
+    z-index: 1;
+}
+
+.auth-liquid-bg {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+    z-index: 0;
+}
+
+.auth-liquid-bg__blob {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(2px);
+    opacity: 0.8;
+    animation: floatBlob 18s ease-in-out infinite;
+}
+
+.auth-liquid-bg__blob--1 {
+    width: min(44vw, 520px);
+    height: min(44vw, 520px);
+    top: -120px;
+    right: -120px;
+    background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.9), rgba(217, 70, 239, 0.5));
+}
+
+.auth-liquid-bg__blob--2 {
+    width: min(36vw, 420px);
+    height: min(36vw, 420px);
+    bottom: -140px;
+    left: -90px;
+    background: radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.82), rgba(124, 58, 237, 0.45));
+    animation-delay: -5s;
+}
+
+.auth-liquid-bg__blob--3 {
+    width: min(26vw, 320px);
+    height: min(26vw, 320px);
+    top: 48%;
+    left: 52%;
+    background: radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.78), rgba(139, 92, 246, 0.38));
+    animation-delay: -10s;
+}
+
+@keyframes floatBlob {
+    0%,
+    100% {
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+        transform: translate3d(0, -16px, 0) scale(1.06);
+    }
 }
 
 .auth-aside {
@@ -115,13 +175,44 @@ body {
     align-items: center;
     justify-content: center;
     padding: 32px 24px;
-    background: var(--flor-white);
+    background: transparent;
 }
 
 .auth-container {
     width: 100%;
-    max-width: 400px;
+    max-width: 460px;
     animation: fadeInUp 0.45s ease;
+}
+
+.auth-form-and-qr {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+#authForm {
+    flex: 1 1 100%;
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+.auth-qr-side {
+    display: none;
+    width: 250px;
+    flex: 0 0 250px;
+}
+
+.auth-container.auth-container--with-qr {
+    max-width: 760px;
+}
+
+.auth-container.auth-container--with-qr .auth-qr-side {
+    display: block;
 }
 
 @keyframes fadeInUp {
@@ -136,15 +227,123 @@ body {
 }
 
 .auth-box {
-    background: transparent;
-    border-radius: 0;
-    padding: 0;
-    box-shadow: none;
+    background: var(--glass-bg);
+    border-radius: 26px;
+    padding: clamp(22px, 4vw, 36px);
+    border: 1px solid var(--glass-stroke);
+    box-shadow: var(--glass-shadow);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    position: relative;
+    overflow: hidden;
+}
+
+.auth-locale {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px 12px;
+    margin: -4px 0 20px;
+    position: relative;
+    z-index: 2;
+}
+
+.auth-locale__label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--flor-muted);
+    margin: 0;
+}
+
+.auth-locale__select {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 8px 32px 8px 12px;
+    min-width: 0;
+    max-width: min(100%, 280px);
+    min-height: 40px;
+    border-radius: 10px;
+    border: 1px solid var(--flor-border);
+    color: #1a1528;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    color-scheme: light;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    /* фон + стрелка; без system arrow — иначе двойной шеврон */
+    background-color: #ffffff;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%2355407a' stroke-width='1.6' stroke-linecap='round' d='M1.5 2.5L6 6.5l4.5-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.auth-locale__select option {
+    color: #1a1528;
+    background: #ffffff;
+    padding: 0.35em 0.5em;
+}
+
+.auth-locale__select option:checked,
+.auth-locale__select option:hover {
+    color: #1a1528;
+    background: #ede9fe;
+}
+
+.auth-locale__select:focus {
+    outline: none;
+    border-color: var(--flor-purple-500);
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+}
+
+html[data-theme="dark"] .auth-locale__select {
+    /* нативный список в тёмной теме: подсказка ОС, явные option ниже */
+    color-scheme: dark;
+    background-color: #252032;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23d4c4f5' d='M1 1.5L6 6l5-4.5' stroke='%23d4c4f5' stroke-width='1.2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    border-color: rgba(255, 255, 255, 0.2);
+    color: #f1ecf9;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme="dark"] .auth-locale__select option {
+    color: #f1ecf9;
+    background: #1f1a2c;
+    font-weight: 500;
+}
+
+html[data-theme="dark"] .auth-locale__select option:hover,
+html[data-theme="dark"] .auth-locale__select option:focus,
+html[data-theme="dark"] .auth-locale__select option:checked {
+    color: #ffffff;
+    background: #2f2844;
+}
+
+html[data-theme="dark"] .auth-locale__select:focus {
+    box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.22);
+    border-color: var(--flor-purple-700);
+}
+
+.auth-box::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0.08) 45%, transparent 68%),
+        radial-gradient(circle at 12% 0%, rgba(255, 255, 255, 0.5), transparent 38%);
 }
 
 .logo {
     text-align: left;
     margin-bottom: 32px;
+    position: relative;
+    z-index: 1;
 }
 
 .logo-img {
@@ -181,7 +380,8 @@ body {
     margin-bottom: 20px;
 }
 
-.form-group label {
+/* Не .remember-label: у неё своя вёрстка (flex) — иначе block ломает чекбокс и строчку с условиями */
+.form-group > label:not(.remember-label) {
     display: block;
     font-size: 13px;
     font-weight: 500;
@@ -192,50 +392,191 @@ body {
 .form-group input {
     width: 100%;
     padding: 12px 14px;
-    background: var(--flor-white);
-    border: 1px solid var(--flor-border);
-    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.68);
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    border-radius: 12px;
     color: var(--flor-text);
     font-size: 15px;
     transition: border-color 0.2s, box-shadow 0.2s;
+    backdrop-filter: blur(8px);
 }
 
 .form-group input:focus {
     outline: none;
-    border-color: var(--flor-purple-200);
-    box-shadow: 0 0 0 3px rgba(109, 40, 217, 0.12);
+    border-color: rgba(167, 139, 250, 0.9);
+    box-shadow: 0 0 0 3px rgba(109, 40, 217, 0.14), 0 10px 26px rgba(109, 40, 217, 0.16);
 }
 
 .form-group input::placeholder {
     color: #a8a0bc;
 }
 
+/* Единый вид при автозаполнении (иначе — «жёлтое»/светлое поле) */
+.form-group input:-webkit-autofill,
+.form-group input:-webkit-autofill:hover,
+.form-group input:-webkit-autofill:focus,
+.form-group input:-webkit-autofill:active {
+    -webkit-text-fill-color: var(--flor-text);
+    caret-color: var(--flor-text);
+    box-shadow: 0 0 0 1000px rgba(255, 255, 255, 0.68) inset;
+    border-color: rgba(255, 255, 255, 0.7);
+    transition: background-color 5000s ease 0s;
+}
+
 .submit-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
     width: 100%;
     padding: 14px;
-    background: var(--flor-purple-700);
+    background: linear-gradient(130deg, #7c3aed, #8b5cf6 42%, #d946ef 100%);
     border: none;
-    border-radius: 10px;
+    border-radius: 12px;
     color: white;
     font-size: 15px;
     font-weight: 600;
     cursor: pointer;
-    transition: background-color 0.2s, transform 0.15s;
+    text-align: center;
+    -webkit-appearance: none;
+    appearance: none;
+    box-sizing: border-box;
+    transition: transform 0.15s, filter 0.2s, box-shadow 0.2s;
     margin-top: 8px;
+    box-shadow: 0 14px 30px rgba(124, 58, 237, 0.34);
 }
 
 .submit-btn:hover {
-    background: var(--flor-purple-900);
+    filter: brightness(1.04);
+    box-shadow: 0 18px 36px rgba(124, 58, 237, 0.4);
 }
 
 .submit-btn:active {
     transform: scale(0.99);
 }
 
+.submit-btn--ghost {
+    margin-top: 10px;
+    background: rgba(255, 255, 255, 0.5);
+    color: var(--flor-purple-700);
+    border: 1px solid rgba(255, 255, 255, 0.65);
+    box-shadow: none;
+}
+
+.submit-btn--ghost:hover {
+    background: rgba(109, 40, 217, 0.06);
+}
+
+.auth-qr-scan {
+    margin-top: 8px;
+    width: 100%;
+}
+.auth-qr-scan__btn {
+    margin-top: 8px;
+}
+.auth-qr-scan-panel {
+    margin-top: 10px;
+    text-align: center;
+    padding: 0 0 4px;
+}
+.auth-qr-video {
+    display: block;
+    width: 100%;
+    max-width: 320px;
+    max-height: min(50vh, 240px);
+    margin: 0 auto 8px;
+    border-radius: 12px;
+    background: #0b0b12;
+    object-fit: cover;
+}
+.auth-qr-scan-hint {
+    font-size: 12px;
+    color: var(--flor-muted);
+    margin: 0 0 6px;
+    line-height: 1.35;
+}
+
+.qr-login-panel,
+.qr-approve-panel {
+    margin-top: 0;
+    padding: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.65);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.42);
+    text-align: center;
+}
+
+.qr-login-panel__title {
+    font-size: 14px;
+    color: var(--flor-text);
+    margin-bottom: 10px;
+}
+
+.qr-login-panel__hint {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--flor-muted);
+}
+
+.qr-login__art {
+    position: relative;
+    width: 220px;
+    max-width: 100%;
+    min-height: 220px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#qrLoginImage {
+    width: 220px;
+    height: 220px;
+    border-radius: 50%;
+    object-fit: cover;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.75);
+    box-shadow:
+        0 0 0 6px rgba(255, 255, 255, 0.22),
+        0 14px 34px rgba(109, 40, 217, 0.28);
+}
+
+#qrLoginImage[hidden] {
+    display: none;
+}
+
+.qr-login__wait {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(245, 240, 255, 0.9));
+    border: 1px solid rgba(255, 255, 255, 0.75);
+    box-shadow:
+        0 0 0 6px rgba(255, 255, 255, 0.22),
+        0 14px 34px rgba(109, 40, 217, 0.2);
+}
+
+.qr-login__wait[hidden] {
+    display: none !important;
+}
+
+.qr-login__wait-ico {
+    font-size: 3.5rem;
+    line-height: 1;
+    opacity: 0.85;
+    filter: grayscale(0.1);
+}
+
 .switch-mode {
     margin-top: 24px;
     font-size: 14px;
     color: var(--flor-muted);
+    position: relative;
+    z-index: 1;
+    text-align: center;
 }
 
 .switch-mode a {
@@ -255,18 +596,125 @@ body {
 
 .remember-label {
     display: flex;
-    align-items: center;
+    flex-direction: row;
+    align-items: flex-start;
     gap: 10px;
     font-size: 14px;
+    font-weight: 500;
     color: var(--flor-muted);
     cursor: pointer;
     user-select: none;
+    line-height: 1.45;
+    margin-bottom: 0;
+}
+
+.remember-label > span {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* Одна строка — квадрат ровно по вертикали с текстом; блок условий — ссылка/переносы с соседом сверху */
+#rememberRow .remember-label {
+    align-items: center;
+}
+
+#termsConsentRow .remember-label {
+    align-items: flex-start;
 }
 
 .remember-label input {
-    width: 16px;
-    height: 16px;
-    accent-color: var(--flor-purple-700);
+    width: 18px;
+    height: 18px;
+    min-width: 18px;
+    min-height: 18px;
+    margin: 0.1em 0 0 0;
+    border-radius: 5px;
+    border: 1.5px solid rgba(139, 92, 246, 0.55);
+    background: rgba(255, 255, 255, 0.68);
+    appearance: none;
+    -webkit-appearance: none;
+    flex: 0 0 18px;
+    align-self: flex-start;
+    position: relative;
+    box-sizing: border-box;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+    vertical-align: top;
+}
+
+#rememberRow .remember-label input {
+    margin-top: 0;
+    align-self: center;
+}
+
+#termsConsentRow .remember-label input {
+    margin-top: 0.1em;
+    align-self: flex-start;
+}
+
+.remember-label input:hover {
+    border-color: rgba(124, 58, 237, 0.75);
+}
+
+.remember-label input:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(109, 40, 217, 0.25);
+}
+
+.remember-label input:checked {
+    border-color: transparent;
+    background: linear-gradient(130deg, #7c3aed, #a855f7);
+}
+
+.remember-label input:checked::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 4px;
+    height: 7px;
+    border: solid #fff;
+    border-width: 0 1.5px 1.5px 0;
+    transform: translate(calc(-50% + 0.2px), calc(-50% - 0.3px)) rotate(45deg);
+    box-sizing: border-box;
+    pointer-events: none;
+}
+
+.remember-label a {
+    color: var(--flor-purple-700);
+    text-decoration: none;
+}
+
+.remember-label a:hover {
+    text-decoration: underline;
+}
+
+.auth-inline-action {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: -8px;
+    margin-bottom: 16px;
+}
+
+.link-btn {
+    border: 0;
+    background: transparent;
+    color: var(--flor-purple-700);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+}
+
+.link-btn:hover {
+    text-decoration: underline;
+}
+
+.link-btn:disabled {
+    opacity: 0.65;
+    cursor: default;
+    text-decoration: none;
 }
 
 .error-message {
@@ -341,6 +789,20 @@ body {
     }
 }
 
+@media (max-width: 860px) {
+    .auth-form-and-qr {
+        flex-direction: column;
+    }
+    .auth-container.auth-container--with-qr .auth-qr-side {
+        width: 100%;
+        flex-basis: auto;
+    }
+    .qr-login-panel,
+    .qr-approve-panel {
+        margin-top: 12px;
+    }
+}
+
 /* Тёмная тема (та же настройка florMessengerSettings.theme) */
 html[data-theme="dark"] {
     --flor-purple-50: #12101a;
@@ -350,14 +812,20 @@ html[data-theme="dark"] {
     --flor-white: #181422;
     --flor-purple-700: #a78bfa;
     --flor-purple-200: #5b21b6;
+    --glass-bg: rgba(24, 20, 34, 0.56);
+    --glass-stroke: rgba(255, 255, 255, 0.12);
+    --glass-shadow: 0 26px 80px rgba(0, 0, 0, 0.5);
 }
 
 html[data-theme="dark"] body {
-    background: var(--flor-purple-50);
+    background:
+        radial-gradient(ellipse 80% 60% at 100% 0%, rgba(217, 70, 239, 0.24), transparent 52%),
+        radial-gradient(ellipse 65% 56% at 0% 100%, rgba(76, 29, 149, 0.32), transparent 50%),
+        linear-gradient(140deg, #0f0b16 0%, #171124 55%, #120f1d 100%);
 }
 
 html[data-theme="dark"] .auth-main {
-    background: #16121f;
+    background: transparent;
 }
 
 html[data-theme="dark"] .logo .brand-name {
@@ -366,6 +834,51 @@ html[data-theme="dark"] .logo .brand-name {
 
 html[data-theme="dark"] .form-group input:focus {
     box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.2);
+}
+
+html[data-theme="dark"] .form-group input {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.14);
+}
+
+html[data-theme="dark"] .form-group input:-webkit-autofill,
+html[data-theme="dark"] .form-group input:-webkit-autofill:hover,
+html[data-theme="dark"] .form-group input:-webkit-autofill:focus,
+html[data-theme="dark"] .form-group input:-webkit-autofill:active {
+    -webkit-text-fill-color: var(--flor-text);
+    caret-color: var(--flor-text);
+    box-shadow: 0 0 0 1000px rgba(255, 255, 255, 0.07) inset;
+    border-color: rgba(255, 255, 255, 0.16);
+    transition: background-color 5000s ease 0s;
+}
+
+html[data-theme="dark"] .remember-label input {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(167, 139, 250, 0.45);
+}
+
+html[data-theme="dark"] .remember-label input:checked {
+    background: linear-gradient(130deg, #6d28d9, #a78bfa);
+    border-color: transparent;
+}
+
+html[data-theme="dark"] .submit-btn--ghost {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.16);
+}
+
+html[data-theme="dark"] .qr-login-panel,
+html[data-theme="dark"] .qr-approve-panel {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.16);
+}
+
+html[data-theme="dark"] #qrLoginImage {
+    background: rgba(255, 255, 255, 0.9);
+    border-color: rgba(255, 255, 255, 0.7);
+    box-shadow:
+        0 0 0 6px rgba(255, 255, 255, 0.08),
+        0 16px 36px rgba(0, 0, 0, 0.35);
 }
 
 html[data-theme="dark"] .switch-mode a {
@@ -381,6 +894,8 @@ html[data-theme="dark"] .loading {
     text-align: center;
     font-size: 13px;
     color: var(--flor-muted);
+    position: relative;
+    z-index: 1;
 }
 
 .auth-legal a {
@@ -390,4 +905,182 @@ html[data-theme="dark"] .loading {
 
 .auth-legal a:hover {
     text-decoration: underline;
+}
+
+/* —— Мобильные: плотнее сетка, карточка по центру экрана; длинная форма — прокрутка —— */
+@media (max-width: 640px) {
+    body {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    #florInsecureCtxBanner.flor-insecure-ctx-banner,
+    .flor-insecure-ctx-banner {
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+    }
+
+    .auth-layout {
+        flex: 1 1 auto;
+        width: 100%;
+        min-height: 100dvh;
+        align-items: stretch;
+    }
+
+    .auth-main {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: center;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: max(10px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px))
+            max(12px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px));
+    }
+
+    .auth-container {
+        max-width: 100%;
+    }
+
+    .auth-box {
+        border-radius: 20px;
+        padding: 16px 14px 14px;
+    }
+
+    .auth-locale {
+        margin: 0 0 12px;
+        gap: 6px 10px;
+        justify-content: space-between;
+    }
+
+    .auth-locale__label {
+        font-size: 11px;
+    }
+
+    .auth-locale__select {
+        font-size: 12px;
+        padding: 6px 28px 6px 10px;
+        min-height: 36px;
+        max-width: min(100%, 200px);
+    }
+
+    .logo {
+        margin-bottom: 18px;
+        text-align: center;
+    }
+
+    .logo-img {
+        width: 40px;
+        height: 40px;
+        margin: 0 auto 10px;
+    }
+
+    .logo .brand-name {
+        font-size: 0.68rem;
+        margin-bottom: 4px;
+    }
+
+    .logo h1,
+    .logo .auth-mode-title {
+        font-size: 1.35rem;
+        margin-bottom: 4px;
+        line-height: 1.2;
+    }
+
+    .logo p,
+    .logo .auth-mode-lead {
+        font-size: 13px;
+        line-height: 1.4;
+    }
+
+    .auth-box--register .logo {
+        margin-bottom: 14px;
+    }
+
+    .form-group {
+        margin-bottom: 12px;
+    }
+
+    .form-group > label:not(.remember-label) {
+        font-size: 12px;
+        margin-bottom: 5px;
+    }
+
+    .form-group input {
+        padding: 10px 12px;
+        font-size: 16px;
+        border-radius: 11px;
+    }
+
+    .auth-inline-action {
+        margin-top: -4px;
+        margin-bottom: 10px;
+    }
+
+    .submit-btn {
+        padding: 12px 14px;
+        font-size: 15px;
+        margin-top: 4px;
+        border-radius: 11px;
+    }
+
+    .submit-btn--ghost {
+        margin-top: 8px;
+        padding: 11px 14px;
+    }
+
+    .auth-qr-scan {
+        margin-top: 4px;
+    }
+    .auth-qr-scan__btn {
+        margin-top: 6px;
+    }
+
+    .remember-row {
+        margin-bottom: 4px;
+    }
+
+    .remember-label {
+        font-size: 13px;
+        gap: 8px;
+        line-height: 1.35;
+    }
+
+    .switch-mode {
+        margin-top: 14px;
+        font-size: 13px;
+    }
+
+    .auth-legal {
+        margin-top: 14px;
+        font-size: 12px;
+    }
+
+    .flor-insecure-ctx-banner {
+        margin: 0 0 8px;
+        padding: 10px 12px;
+        font-size: 12px;
+    }
+
+    .error-message,
+    .success-message {
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        font-size: 13px;
+    }
+}
+
+/* Очень узкие экраны: ещё чуть плотнее */
+@media (max-width: 380px) {
+    .auth-box {
+        padding: 14px 12px 12px;
+    }
+
+    .auth-main {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
 }
