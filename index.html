@@ -23,6 +23,28 @@
         } catch (e) {}
     </script>
     <link rel="stylesheet" href="styles.css">
+    <script>
+        /* visualViewport — реальная ширина видимой области; в PWA iOS layout width бывает меньше — ломается width:100% у fixed. */
+        (function () {
+            function florSyncVvWidth() {
+                try {
+                    var vv = window.visualViewport;
+                    if (!vv) return;
+                    var w = vv.width;
+                    if (w > 0) document.documentElement.style.setProperty('--flor-vv-w', w + 'px');
+                } catch (e) {}
+            }
+            florSyncVvWidth();
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', florSyncVvWidth, { passive: true });
+                window.visualViewport.addEventListener('scroll', florSyncVvWidth, { passive: true });
+            }
+            window.addEventListener('orientationchange', florSyncVvWidth, { passive: true });
+            window.addEventListener('pageshow', function (e) {
+                if (e.persisted) florSyncVvWidth();
+            });
+        })();
+    </script>
     <script src="i18n-uk-tt.js"></script>
     <script src="i18n.js"></script>
     <script>

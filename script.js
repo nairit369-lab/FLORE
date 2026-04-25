@@ -5282,7 +5282,7 @@ async function florHandleInviteJoinFromUrl() {
 }
 
 function florIsMobileTabbarLayout() {
-    return typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 768px)').matches;
+    return typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1024px)').matches;
 }
 
 /** В мобильной вёрстке: в открытом чате скрываем нижний таббар и компактим шапку (класс на body). */
@@ -5338,10 +5338,10 @@ function florUpdateMobileTabHighlight() {
 function initializeMobileNav() {
     const shell = document.getElementById('florSidebarShell');
     const backdrop = document.getElementById('florMobileNavBackdrop');
-    const mq = typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 768px)') : null;
+    const mq = typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 1024px)') : null;
 
     function isMobileNavLayout() {
-        return mq ? mq.matches : window.innerWidth <= 768;
+        return mq ? mq.matches : window.innerWidth <= 1024;
     }
 
     function syncMobileNavBackdropAria() {
@@ -5790,7 +5790,7 @@ function initializeMobileSwipeNav() {
     let armed = false;
 
     function onTouchStart(e) {
-        if (window.innerWidth > 768) return;
+        if (window.innerWidth > 1024) return;
         if (!e.touches || e.touches.length !== 1) return;
         const t = e.touches[0];
         startX = t.clientX;
@@ -5801,7 +5801,7 @@ function initializeMobileSwipeNav() {
     function onTouchEnd(e) {
         if (!armed) return;
         armed = false;
-        if (window.innerWidth > 768) return;
+        if (window.innerWidth > 1024) return;
         if (!e.changedTouches || e.changedTouches.length !== 1) return;
         const t = e.changedTouches[0];
         const dx = t.clientX - startX;
@@ -7136,7 +7136,7 @@ function addMessageToUI(message) {
         if (willOpen) {
             menu.classList.remove('hidden');
             moreBtn.setAttribute('aria-expanded', 'true');
-            if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 768px)').matches) {
+            if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1024px)').matches) {
                 florPositionMessageMenuFixed(menu, moreBtn);
             } else {
                 florResetMessageMenuPosition(menu);
@@ -7940,7 +7940,7 @@ let florVoiceInitializing = false;
 
 function florPreferHoldToRecordVoice() {
     try {
-        return window.matchMedia('(max-width: 768px), (pointer: coarse)').matches;
+        return window.matchMedia('(max-width: 1024px), (pointer: coarse)').matches;
     } catch (_) {
         return false;
     }
@@ -10114,7 +10114,7 @@ async function florEnsureCallFullscreen() {
 /** На телефоне видеозвонок сразу в полноэкранном режиме — иначе вёрстка «прижата» к верху и обрезана чёлкой */
 function florEnterCallFullscreenForMobileVideo() {
     try {
-        if (typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 769px)').matches) {
+        if (typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 1025px)').matches) {
             return;
         }
         const el = document.getElementById('callInterface');
