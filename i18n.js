@@ -193,6 +193,13 @@
             twoFactorLabel: '2FA code from email',
             twoFactorPh: '6 digits',
             forgotPassword: 'Forgot password?',
+            changePwdTitle: 'Change password',
+            changePwdHint: 'Use the same email as in the form above, your current password, and enter the new one twice.',
+            currentPassword: 'Current password',
+            newPasswordLabel: 'New password',
+            confirmNewPassword: 'Confirm new password',
+            changePwdSubmit: 'Save new password',
+            changePwdCancel: 'Cancel',
             confirmPassword: 'Confirm password',
             emailCode: 'Code from email',
             emailCodePh: '6 digits',
@@ -276,7 +283,11 @@
             qrSignInProgress: 'Success! Signing in…',
             qrNoCamera: 'Could not use the camera. Allow access in the browser or use a secure connection (HTTPS).',
             qrInvalidQr: 'This QR is not a FLOR sign-in code. Check the code and try again.',
-            qrScanUnsupported: 'This browser cannot read QR. Try Chrome or allow scripts from the CDN (jsQR).'
+            qrScanUnsupported: 'This browser cannot read QR. Try Chrome or allow scripts from the CDN (jsQR).',
+            changePwdEmailFirst: 'Enter your email in the form above first.',
+            changePwdAllFields: 'Fill in current password, new password, and confirmation.',
+            changePwdSuccess: 'Password updated. You can sign in with the new password.',
+            changePwdFail: 'Could not change password. Check your data and try again.'
         },
         settings: {
             title: 'Settings',
@@ -526,6 +537,13 @@
             twoFactorLabel: 'Код 2FA из письма',
             twoFactorPh: '6 цифр',
             forgotPassword: 'Забыли пароль?',
+            changePwdTitle: 'Смена пароля',
+            changePwdHint: 'Используйте тот же email, что в форме выше, текущий пароль и дважды введите новый.',
+            currentPassword: 'Текущий пароль',
+            newPasswordLabel: 'Новый пароль',
+            confirmNewPassword: 'Подтвердите новый пароль',
+            changePwdSubmit: 'Сохранить новый пароль',
+            changePwdCancel: 'Отмена',
             confirmPassword: 'Повторите пароль',
             emailCode: 'Код из письма',
             emailCodePh: '6 цифр',
@@ -611,7 +629,11 @@
             qrNoCamera:
                 'Не удалось открыть камеру. Разрешите доступ в настройках браузера или используйте HTTPS.',
             qrInvalidQr: 'Это не FLOR QR для входа. Проверьте код и попробуйте снова.',
-            qrScanUnsupported: 'В этом браузере нет распознавания QR. Попробуйте Chrome или обновите страницу.'
+            qrScanUnsupported: 'В этом браузере нет распознавания QR. Попробуйте Chrome или обновите страницу.',
+            changePwdEmailFirst: 'Сначала введите email в поле выше.',
+            changePwdAllFields: 'Заполните текущий пароль, новый и подтверждение.',
+            changePwdSuccess: 'Пароль обновлён. Можно войти с новым паролем.',
+            changePwdFail: 'Не удалось сменить пароль. Проверьте данные и попробуйте снова.'
         },
         settings: {
             title: 'Настройки',

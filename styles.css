@@ -7432,15 +7432,24 @@ html[data-theme='dark'] .settings-nav-btn.active {
         --flor-shadow-glow: 0 0 16px rgba(77, 146, 160, 0.12);
     }
 
-    /* --- Layout reset: full-viewport flex column --- */
-    html, body {
+    /* --- Layout reset: iOS / iPhone: стабильная высота, без «чёрных полей»
+       100dvh в Safari 16+ плавает с панелью; -webkit-fill-available — PWA/безопасные зоны.
+       Safe-area не дублируем: padding только на .flor-sidebar-shell / .main-content. --- */
+    html,
+    body {
         height: 100%;
+        min-height: 100%;
+        min-height: 100dvh;
+        min-height: 100svh;
+        min-height: -webkit-fill-available;
         overflow: hidden;
         overscroll-behavior: none;
     }
 
     body {
         background: var(--flor-bg);
+        padding: 0 !important;
+        margin: 0;
     }
 
     .flor-desktop-topbar,
@@ -7456,14 +7465,20 @@ html[data-theme='dark'] .settings-nav-btn.active {
     .flor-desktop-shell {
         display: flex;
         flex-direction: column;
-        min-height: 100dvh;
-        max-height: 100dvh;
         width: 100%;
+        flex: 1 1 auto;
+        min-height: 100dvh;
+        min-height: 100svh;
+        min-height: -webkit-fill-available;
+        max-height: none;
     }
 
     .flor-desktop-body {
         flex: 1;
         min-height: 0;
+        min-height: 100dvh;
+        min-height: 100svh;
+        min-height: -webkit-fill-available;
         display: flex;
         flex-direction: column;
         position: relative;
@@ -7484,14 +7499,25 @@ html[data-theme='dark'] .settings-nav-btn.active {
     .flor-sidebar-shell {
         position: fixed;
         inset: 0;
-        width: 100vw;
-        height: 100dvh;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        width: 100%;
+        min-width: 0;
+        height: 100%;
+        min-height: 100dvh;
+        min-height: 100svh;
+        min-height: -webkit-fill-available;
         max-height: none;
         z-index: 40;
         display: flex;
         flex-direction: column;
         padding-top: env(safe-area-inset-top, 0px);
         padding-bottom: calc(var(--flor-mobile-tabbar-block) + env(safe-area-inset-bottom, 0px));
+        padding-left: env(safe-area-inset-left, 0px);
+        padding-right: env(safe-area-inset-right, 0px);
+        box-sizing: border-box;
         background: var(--flor-bg);
         transform: none;
         box-shadow: none;
@@ -8761,11 +8787,19 @@ html[data-theme='dark'] .settings-nav-btn.active {
     .main-content {
         display: flex !important;
         flex-direction: column;
-        width: 100vw;
-        height: 100dvh;
-        min-height: 0;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        flex: 1 1 auto;
+        min-height: 100dvh;
+        min-height: 100svh;
+        min-height: -webkit-fill-available;
+        max-height: none;
+        box-sizing: border-box;
         padding: 0;
         padding-top: env(safe-area-inset-top, 0px);
+        padding-left: env(safe-area-inset-left, 0px);
+        padding-right: env(safe-area-inset-right, 0px);
         padding-bottom: calc(var(--flor-mobile-tabbar-block) + env(safe-area-inset-bottom, 0px));
         background: var(--flor-bg);
     }
@@ -9113,7 +9147,13 @@ html[data-theme='dark'] .settings-nav-btn.active {
         background: var(--flor-bg);
         display: none !important;
         flex-direction: column;
+        box-sizing: border-box;
+        min-height: 100dvh;
+        min-height: 100svh;
+        min-height: -webkit-fill-available;
         padding-top: env(safe-area-inset-top, 0px);
+        padding-left: env(safe-area-inset-left, 0px);
+        padding-right: env(safe-area-inset-right, 0px);
     }
 
     body.flor-mobile-servers-active #florMobileServersScreen,

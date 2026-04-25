@@ -1304,9 +1304,11 @@ app.post('/api/auth/qr/start', authLimiter, async (req, res) => {
         const s = createQrSession();
         const approveUrl = `${florOriginFromReq(req)}/login.html?qrSession=${encodeURIComponent(s.id)}`;
         const qrImage = await QRCode.toDataURL(approveUrl, {
-            errorCorrectionLevel: 'M',
-            margin: 1,
-            width: 320
+            /* H + отступ: устойчивее к сжатию/съёмке с экрана; круглая маска в CSS ломала чтение — не возвращать */
+            errorCorrectionLevel: 'H',
+            margin: 2,
+            width: 320,
+            color: { dark: '#0f0a1a', light: '#ffffff' }
         });
         res.json({
             sessionId: s.id,
@@ -1426,6 +1428,38 @@ app.post('/api/login', authLimiter, async (req, res) => {
         }
         console.error('Login error:', error);
         res.status(500).json({ error: 'Login failed' });
+    }
+});
+
+/** Смена пароля с экрана входа: email + текущий пароль + новый (без JWT) */
+app.post('/api/auth/change-password-prelogin', authLimiter, async (req, res) => {
+    try {
+        const email = String((req.body && req.body.email) || '')
+            .trim()
+            .toLowerCase();
+        const currentPassword =
+            typeof (req.body && req.body.currentPassword) === 'string' ? req.body.currentPassword : '';
+        const newPassword = typeof (req.body && req.body.newPassword) === 'string' ? req.body.newPassword : '';
+        if (!email || !currentPassword || !newPassword) {
+            return res.status(400).json({ error: 'Email, current password and new password required' });
+        }
+        if (newPassword.length < 6) {
+            return res.status(400).json({ error: 'New password must be at least 6 characters' });
+        }
+        const user = await userDB.findByEmail(email);
+        if (!user) {
+            return res.status(400).json({ error: 'Invalid credentials' });
+        }
+        const validPassword = await bcrypt.compare(currentPassword, user.password);
+        if (!validPassword) {
+            return res.status(400).json({ error: 'Invalid credentials' });
+        }
+        const hashed = await bcrypt.hash(newPassword, 10);
+        await userDB.updatePassword(user.id, hashed);
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('change-password-prelogin:', error);
+        res.status(500).json({ error: 'Failed to change password' });
     }
 });
 

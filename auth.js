@@ -221,6 +221,19 @@ function initializeAuth() {
     authForm.addEventListener('submit', handleSubmit);
     switchLink.addEventListener('click', toggleMode);
     forgotPasswordBtn?.addEventListener('click', handleForgotPassword);
+    const changePwdModal = document.getElementById('changePasswordModal');
+    document.getElementById('changePasswordModalBackdrop')?.addEventListener('click', closeChangePasswordModal);
+    document.getElementById('changePasswordModalClose')?.addEventListener('click', closeChangePasswordModal);
+    document.getElementById('changePwdSubmit')?.addEventListener('click', handleChangePasswordPrelogin);
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const modal = document.getElementById('changePasswordModal');
+            if (modal && !modal.hidden) {
+                e.preventDefault();
+                closeChangePasswordModal();
+            }
+        }
+    });
     sendEmailCodeBtn?.addEventListener('click', handleSendEmailCode);
     qrLoginBtn?.addEventListener('click', startQrLoginFlow);
     qrApproveBtn?.addEventListener('click', approveQrFromPhone);
@@ -334,6 +347,7 @@ function applyAuthModeUI() {
         if (rememberRow) rememberRow.style.display = 'block';
         if (termsConsentRow) termsConsentRow.style.display = 'block';
         if (forgotPasswordRow) forgotPasswordRow.style.display = 'none';
+        closeChangePasswordModal();
         if (qrLoginBtn) qrLoginBtn.style.display = 'none';
         if (qrLoginPanel) qrLoginPanel.hidden = true;
         if (qrApprovePanel) qrApprovePanel.hidden = true;
@@ -371,14 +385,119 @@ function applyAuthModeUI() {
     }
 }
 
-function handleForgotPassword() {
+function openChangePasswordModal() {
+    const modal = document.getElementById('changePasswordModal');
+    if (!modal) return;
     removeMessage('error-message');
     removeMessage('success-message');
-    showSuccess(
-        window.florI18n
-            ? window.florI18n.t('auth.forgotPwdMsg')
-            : 'Password reset: ask your server administrator.'
-    );
+    modal.hidden = false;
+    modal.setAttribute('aria-hidden', 'false');
+    document.getElementById('changePwdCurrent')?.focus();
+    try {
+        document.body.style.overflow = 'hidden';
+    } catch (_) {}
+    if (window.florI18n) {
+        try {
+            window.florI18n.applyDom(modal);
+        } catch (_) {}
+    }
+}
+
+function closeChangePasswordModal() {
+    const modal = document.getElementById('changePasswordModal');
+    if (!modal || modal.hidden) return;
+    modal.hidden = true;
+    modal.setAttribute('aria-hidden', 'true');
+    document.getElementById('changePwdCurrent') && (document.getElementById('changePwdCurrent').value = '');
+    document.getElementById('changePwdNew') && (document.getElementById('changePwdNew').value = '');
+    document.getElementById('changePwdConfirm') && (document.getElementById('changePwdConfirm').value = '');
+    try {
+        document.body.style.overflow = '';
+    } catch (_) {}
+}
+
+function handleForgotPassword() {
+    if (!isLoginMode) {
+        return;
+    }
+    openChangePasswordModal();
+}
+
+function handleChangePasswordPrelogin() {
+    const email = (document.getElementById('email') && document.getElementById('email').value) || '';
+    const current = (document.getElementById('changePwdCurrent') && document.getElementById('changePwdCurrent').value) || '';
+    const newPass = (document.getElementById('changePwdNew') && document.getElementById('changePwdNew').value) || '';
+    const confirm = (document.getElementById('changePwdConfirm') && document.getElementById('changePwdConfirm').value) || '';
+    const emailTrim = String(email).trim();
+    if (!emailTrim) {
+        showError(window.florI18n ? window.florI18n.t('authClient.changePwdEmailFirst') : 'Enter your email in the form above first.');
+        return;
+    }
+    if (!current || !newPass || !confirm) {
+        showError(window.florI18n ? window.florI18n.t('authClient.changePwdAllFields') : 'Fill in all fields.');
+        return;
+    }
+    if (newPass.length < 6) {
+        showError(window.florI18n ? window.florI18n.t('authClient.passwordMin') : 'Password at least 6 characters');
+        return;
+    }
+    if (newPass !== confirm) {
+        showError(window.florI18n ? window.florI18n.t('authClient.passwordMismatch') : 'Passwords do not match');
+        return;
+    }
+    removeMessage('error-message');
+    removeMessage('success-message');
+    const btn = document.getElementById('changePwdSubmit');
+    if (btn) {
+        btn.disabled = true;
+    }
+    fetch(florApi('/api/auth/change-password-prelogin'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            email: emailTrim,
+            currentPassword: current,
+            newPassword: newPass
+        })
+    })
+        .then(async (r) => {
+            let j = {};
+            try {
+                j = await r.json();
+            } catch (_) {}
+            return { ok: r.ok, j };
+        })
+        .then(({ ok, j }) => {
+            if (ok) {
+                closeChangePasswordModal();
+                showSuccess(
+                    window.florI18n ? window.florI18n.t('authClient.changePwdSuccess') : 'Password updated. You can sign in with the new password.'
+                );
+                const pw = document.getElementById('password');
+                if (pw) pw.value = newPass;
+            } else {
+                const err = (j && j.error) || '';
+                if (err === 'Invalid credentials') {
+                    showError(window.florI18n ? window.florI18n.t('authApi.invalidCredentials') : 'Invalid email or password');
+                } else if (err && err.indexOf('at least 6') !== -1) {
+                    showError(window.florI18n ? window.florI18n.t('authClient.passwordMin') : 'Password at least 6 characters');
+                } else if (err && err.indexOf('required') !== -1) {
+                    showError(window.florI18n ? window.florI18n.t('authClient.changePwdAllFields') : 'Fill in all fields');
+                } else {
+                    showError(
+                        window.florI18n ? window.florI18n.t('authClient.changePwdFail') : 'Could not change password. Try again.'
+                    );
+                }
+            }
+        })
+        .catch(() => {
+            showError(
+                window.florI18n ? window.florI18n.t('authClient.networkError') : 'Network error. Try again.'
+            );
+        })
+        .finally(() => {
+            if (btn) btn.disabled = false;
+        });
 }
 
 function getQrSessionFromUrl() {
@@ -476,6 +595,52 @@ function enterQrLoginWaitingState(sessionId, cleanUrl) {
     beginQrPolling(String(sessionId).trim());
 }
 
+/** iOS Safari: несколько вариантов constraints; среда, затем любая камера */
+async function florGetAuthQrVideoStream() {
+    const fallbacks = [
+        { video: { facingMode: { ideal: 'environment' } }, audio: false },
+        { video: { facingMode: 'environment' }, audio: false },
+        { video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+        { video: true, audio: false }
+    ];
+    let lastErr = null;
+    for (const c of fallbacks) {
+        try {
+            return await navigator.mediaDevices.getUserMedia(c);
+        } catch (e) {
+            lastErr = e;
+        }
+    }
+    throw lastErr || new Error('getUserMedia failed');
+}
+
+/** Полный кадр, затем центральный crop — так проще поймать QR с экрана ПК */
+function florJsQrDecodeFrame(ctx, video) {
+    if (!window.jsQR || !ctx || !video) return null;
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    if (w <= 8 || h <= 8) return null;
+    const opt = { inversionAttempts: 'attemptBoth' };
+    if (!qrScanCanvas) return null;
+    qrScanCanvas.width = w;
+    qrScanCanvas.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
+    let d = ctx.getImageData(0, 0, w, h);
+    let res = window.jsQR(d.data, w, h, opt);
+    if (res && res.data) return res;
+    const s = 0.7;
+    const cw = Math.max(64, Math.floor(w * s));
+    const ch = Math.max(64, Math.floor(h * s));
+    const sx = Math.floor((w - cw) / 2);
+    const sy = Math.floor((h - ch) / 2);
+    qrScanCanvas.width = cw;
+    qrScanCanvas.height = ch;
+    ctx.drawImage(video, sx, sy, cw, ch, 0, 0, cw, ch);
+    d = ctx.getImageData(0, 0, cw, ch);
+    res = window.jsQR(d.data, cw, ch, opt);
+    return res && res.data ? res : null;
+}
+
 function stopQrScanCamera() {
     if (qrScanTimer) {
         clearInterval(qrScanTimer);
@@ -546,10 +711,7 @@ function startQrScanCamera() {
             detector = null;
         }
         try {
-            qrScanStream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: { ideal: 'environment' } },
-                audio: false
-            });
+            qrScanStream = await florGetAuthQrVideoStream();
         } catch (e) {
             console.error('getUserMedia', e);
             showError(
@@ -560,6 +722,10 @@ function startQrScanCamera() {
             panel.hidden = true;
             return;
         }
+        v.setAttribute('playsinline', 'true');
+        v.setAttribute('webkit-playsinline', 'true');
+        v.playsInline = true;
+        v.muted = true;
         v.srcObject = qrScanStream;
         v.play().catch(() => {});
         if (!qrScanCanvas) {
@@ -580,18 +746,10 @@ function startQrScanCamera() {
                         }
                     }
                 } else if (window.jsQR && ctx) {
-                    const w = v.videoWidth;
-                    const h = v.videoHeight;
-                    if (w > 8 && h > 8) {
-                        qrScanCanvas.width = w;
-                        qrScanCanvas.height = h;
-                        ctx.drawImage(v, 0, 0, w, h);
-                        const d = ctx.getImageData(0, 0, w, h);
-                        const res = window.jsQR(d.data, w, h, { inversionAttempts: 'attemptBoth' });
-                        if (res && res.data) {
-                            handleQrDataFromScan(res.data);
-                            return;
-                        }
+                    const res = florJsQrDecodeFrame(ctx, v);
+                    if (res && res.data) {
+                        handleQrDataFromScan(res.data);
+                        return;
                     }
                 }
             } catch (err) {
@@ -600,7 +758,7 @@ function startQrScanCamera() {
                 }
             }
         };
-        qrScanTimer = setInterval(tick, 320);
+        qrScanTimer = setInterval(tick, 220);
     })();
 }
 

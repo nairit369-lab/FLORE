@@ -154,6 +154,40 @@
         </div>
     </div>
 
+    <div
+        id="changePasswordModal"
+        class="auth-modal"
+        hidden
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="changePasswordModalTitle"
+        aria-hidden="true"
+    >
+        <button type="button" class="auth-modal__backdrop" id="changePasswordModalBackdrop" aria-label="Close"></button>
+        <div class="auth-modal__card">
+            <h2 class="auth-modal__title" id="changePasswordModalTitle" data-i18n="auth.changePwdTitle">Change password</h2>
+            <p class="auth-modal__lead" data-i18n="auth.changePwdHint">
+                Use the same email as above. Enter your current password and a new one.
+            </p>
+            <div class="form-group">
+                <label for="changePwdCurrent" data-i18n="auth.currentPassword">Current password</label>
+                <input type="password" id="changePwdCurrent" name="changePwdCurrent" autocomplete="current-password" />
+            </div>
+            <div class="form-group">
+                <label for="changePwdNew" data-i18n="auth.newPasswordLabel">New password</label>
+                <input type="password" id="changePwdNew" name="changePwdNew" autocomplete="new-password" />
+            </div>
+            <div class="form-group">
+                <label for="changePwdConfirm" data-i18n="auth.confirmNewPassword">Confirm new password</label>
+                <input type="password" id="changePwdConfirm" name="changePwdConfirm" autocomplete="new-password" />
+            </div>
+            <button type="button" class="submit-btn" id="changePwdSubmit" data-i18n="auth.changePwdSubmit">Save new password</button>
+            <div class="auth-modal__actions">
+                <button type="button" class="link-btn" id="changePasswordModalClose" data-i18n="auth.changePwdCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js" crossorigin="anonymous"></script>
     <script src="auth.js"></script>
 </body>
