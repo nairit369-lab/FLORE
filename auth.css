@@ -45,6 +45,11 @@ body {
     min-height: 100vh;
     min-height: 100dvh;
     display: flex;
+    /* column: #florInsecureCtxBanner + .auth-layout в row делят ширину (узкий центр) */
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    max-width: 100%;
     padding: 0;
     padding-top: env(safe-area-inset-top, 0px);
     padding-bottom: env(safe-area-inset-bottom, 0px);
